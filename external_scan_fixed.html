@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>棚卸スキャン</title>
+  <!-- html5-qrcode library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+      background: #f5f5f5;
+      margin: 0;
+    }
+    .wrap {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    }
+    h1, h2 { margin: 0 0 12px; }
+    .row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 14px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    label { font-weight: bold; }
+    select, input[type="number"], input[type="text"] {
+      width: 100%;
+      min-height: 48px;
+      padding: 10px 12px;
+      font-size: 16px;
+      border: 2px solid #d9dde3;
+      border-radius: 12px;
+      box-sizing: border-box;
+      background: #fff;
+    }
+    button {
+      width: 100%;
+      min-height: 52px;
+      padding: 10px 12px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .primary { background: #1a73e8; color: #fff; }
+    .ghost { background: #fff; color: #202124; border: 2px solid #d9dde3; }
+    .warn { background: #fff4e5; color: #9a5a00; border: 2px solid #e0c28a; }
+    #scanner {
+      width: 100%;
+      height: 300px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+      margin-top: 8px;
+      display: none;
+    }
+    #results .item {
+      border: 2px solid #d9dde3;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 10px;
+      background: #fff;
+      cursor: pointer;
+    }
+    #results .item.active {
+      border-color: #1a73e8;
+      background: #eef3fd;
+    }
+    #message {
+      margin-bottom: 12px;
+      font-size: 14px;
+      white-space: pre-wrap;
+      min-height: 20px;
+    }
+    .error { color: #b3261e; }
+    .ok { color: #188038; }
+    .small { font-size: 13px; color: #5f6368; margin-top: 8px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>棚卸スキャン</h1>
+      <div id="message"></div>
+      <div class="row">
+        <label for="staffCode">担当者コード</label>
+        <select id="staffCode">
+          <option value="">--選択してください--</option>
+        </select>
+        <label for="shelfNumber">棚番号</label>
+        <select id="shelfNumber">
+          <option value="">--選択してください--</option>
+        </select>
+        <label for="countDate">棚卸日</label>
+        <div id="countDate">--</div>
+        <label for="inputCount">入力件数</label>
+        <div id="inputCount">0</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>JAN・商品コード・品番・品名</h2>
+      <button id="startButton" class="ghost" type="button">カメラでスキャン</button>
+      <button id="stopButton" class="ghost hidden" type="button">スキャン停止</button>
+      <div id="scanner"></div>
+      <input id="inputKeyword" type="text" placeholder="JAN・商品コード・品番・品名">
+      <button id="searchButton" class="primary" type="button">さがす</button>
+      <div class="small">スキャナ入力後に Enter が入れば自動検索します。数字だけなら JAN 優先で検索します。</div>
+    </div>
+    <div id="results"></div>
+    <div id="quantitySection" class="card hidden">
+      <div class="row">
+        <label for="quantityInput">数量</label>
+        <input id="quantityInput" type="number" min="1" value="1">
+      </div>
+      <button id="saveButton" class="primary" type="button">保存</button>
+      <button id="saveUnmatchedButton" class="warn hidden" type="button">未一致で保存</button>
+    </div>
+  </div>
+  <script>
+    // API endpoint for Google Apps Script
+    const API_URL = 'https://script.google.com/macros/s/AKfycbz3h0vWAU-a9tFcUtfCwIXMnUGnZykHzN08_px3Sk9iMDlKNL2mk2byAI7F89Xc-Zw/exec';
+
+    let html5Qr = null;
+    let selectedProduct = null;
+    let lastKeyword = '';
+    let isSaving = false;
+
+    function showMessage(msg, isError = false) {
+      const div = document.getElementById('message');
+      div.textContent = msg || '';
+      div.className = isError ? 'error' : (msg ? 'ok' : '');
+    }
+
+    // Populate staff codes (001-010) and shelf numbers (a-1 to k-10)
+    function populateSelects() {
+      const staffSel = document.getElementById('staffCode');
+      for (let i = 1; i <= 10; i++) {
+        const val = ('00' + i).slice(-3);
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = val;
+        staffSel.appendChild(opt);
+      }
+      const shelfSel = document.getElementById('shelfNumber');
+      const letters = 'abcdefghijk';
+      for (const letter of letters) {
+        for (let n = 1; n <= 10; n++) {
+          const val = `${letter}-${n}`;
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = val;
+          shelfSel.appendChild(opt);
+        }
+      }
+    }
+
+    // Generic POST request to Apps Script API using flat JSON structure
+    async function postApi(data) {
+      const resp = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (!resp.ok) {
+        throw new Error(`通信に失敗しました (${resp.status})`);
+      }
+      const text = await resp.text();
+      return JSON.parse(text);
+    }
+
+    // Initialize boot info: countDate and inputCount based on selected operator and location
+    async function boot() {
+      const operatorCode = document.getElementById('staffCode').value || '';
+      const location = document.getElementById('shelfNumber').value || '';
+      try {
+        const res = await postApi({ action: 'boot', operatorCode, location });
+        document.getElementById('countDate').textContent = res.countDate || '--';
+        document.getElementById('inputCount').textContent = String(res.inputCount || 0);
+        if (res.operatorCode) document.getElementById('staffCode').value = res.operatorCode;
+        if (res.location) document.getElementById('shelfNumber').value = res.location;
+      } catch (e) {
+        showMessage('初期データ取得に失敗しました: ' + (e.message || e), true);
+      }
+    }
+
+    function resetResults() {
+      selectedProduct = null;
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('quantitySection').classList.add('hidden');
+      document.getElementById('saveUnmatchedButton').classList.add('hidden');
+    }
+
+    // Render candidate list or auto-select/unmatched UI
+    function renderCandidates(items) {
+      const resultsDiv = document.getElementById('results');
+      resultsDiv.innerHTML = '';
+      if (!items || items.length === 0) {
+        // no match: show unmatched option
+        document.getElementById('quantitySection').classList.remove('hidden');
+        document.getElementById('saveUnmatchedButton').classList.remove('hidden');
+        showMessage('候補が見つかりませんでした。未一致で保存できます。', true);
+        return;
+      }
+      if (items.length === 1) {
+        selectedProduct = items[0];
+        showMessage('1件の候補を自動選択しました。');
+        const div = document.createElement('div');
+        div.className = 'item active';
+        const it = items[0];
+        div.innerHTML = `<div><strong>${it.productCode || it.code || it.jan || ''}</strong> ${it.name || it.productName || ''}</div>` +
+          `<div>${it.hinban || '-'} / ${it.jan || '-'}</div>`;
+        resultsDiv.appendChild(div);
+        document.getElementById('quantitySection').classList.remove('hidden');
+        return;
+      }
+      showMessage(`${items.length}件の候補が見つかりました。選択してください。`);
+      items.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.innerHTML = `<div><strong>${item.productCode || item.code || item.jan || ''}</strong> ${item.name || item.productName || ''}</div>` +
+          `<div>${item.hinban || '-'} / ${item.jan || '-'}</div>`;
+        div.onclick = () => {
+          selectedProduct = item;
+          // highlight selected item
+          Array.from(resultsDiv.querySelectorAll('.item')).forEach(el => el.classList.remove('active'));
+          div.classList.add('active');
+          document.getElementById('quantitySection').classList.remove('hidden');
+        };
+        resultsDiv.appendChild(div);
+      });
+    }
+
+    // Perform search using keyword
+    async function onSearch() {
+      showMessage('');
+      resetResults();
+      const keyword = document.getElementById('inputKeyword').value.trim();
+      if (!keyword) {
+        showMessage('JAN・商品コード・品番・品名を入力してください。', true);
+        return;
+      }
+      lastKeyword = keyword;
+      try {
+        const res = await postApi({ action: 'search', keyword });
+        const items = Array.isArray(res.items) ? res.items : [];
+        renderCandidates(items);
+      } catch (e) {
+        showMessage('検索に失敗しました: ' + (e.message || e), true);
+      }
+    }
+
+    // Save entry (matched or unmatched) with top-level JSON payload
+    async function saveEntry(isUnmatched) {
+      if (isSaving) return;
+      const qty = parseInt(document.getElementById('quantityInput').value, 10);
+      if (!qty || qty <= 0) {
+        showMessage('数量を入力してください。', true);
+        return;
+      }
+      const operatorCode = document.getElementById('staffCode').value;
+      const location = document.getElementById('shelfNumber').value;
+      if (!operatorCode || !location) {
+        showMessage('担当者コードと棚番号を選択してください。', true);
+        return;
+      }
+      isSaving = true;
+      try {
+        const payload = {
+          action: 'save',
+          operatorCode,
+          location,
+          quantity: qty,
+          inputMethod: isUnmatched ? 'unmatched' : 'camera_scan',
+          inputValue: lastKeyword
+        };
+        if (!isUnmatched && selectedProduct) {
+          payload.product = selectedProduct;
+        }
+        const res = await postApi(payload);
+        if (res && res.ok !== false) {
+          showMessage(res.message || '保存しました。');
+          document.getElementById('inputKeyword').value = '';
+          document.getElementById('quantityInput').value = '1';
+          resetResults();
+          await boot();
+        } else {
+          showMessage('保存に失敗しました: ' + (res.message || res.error || '不明なエラー'), true);
+        }
+      } catch (e) {
+        showMessage('保存に失敗しました: ' + (e.message || e), true);
+      }
+      isSaving = false;
+    }
+
+    // Reset scanner UI and internal state
+    function revertScanUi() {
+      document.getElementById('scanner').style.display = 'none';
+      document.getElementById('startButton').classList.remove('hidden');
+      document.getElementById('stopButton').classList.add('hidden');
+      if (html5Qr) {
+        try { html5Qr.clear(); } catch (e) {}
+        html5Qr = null;
+      }
+    }
+
+    // Start camera scanning
+    async function startScan() {
+      showMessage('');
+      if (html5Qr) return;
+      document.getElementById('scanner').style.display = 'block';
+      document.getElementById('startButton').classList.add('hidden');
+      document.getElementById('stopButton').classList.remove('hidden');
+      try {
+        html5Qr = new Html5Qrcode('scanner');
+        const config = {
+          fps: 12,
+          qrbox: { width: 360, height: 240 },
+          aspectRatio: 1.7777777778,
+          formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13]
+        };
+        await html5Qr.start(
+          { facingMode: 'environment' },
+          config,
+          (code) => {
+            document.getElementById('inputKeyword').value = code;
+            stopScan();
+            onSearch();
+          },
+          () => {}
+        );
+      } catch (e) {
+        showMessage('カメラ起動に失敗しました: ' + (e.message || e), true);
+        revertScanUi();
+      }
+    }
+
+    async function stopScan() {
+      if (!html5Qr) {
+        revertScanUi();
+        return;
+      }
+      try {
+        await html5Qr.stop();
+      } catch (e) {}
+      revertScanUi();
+    }
+
+    // Event listeners
+    document.getElementById('startButton').addEventListener('click', startScan);
+    document.getElementById('stopButton').addEventListener('click', stopScan);
+    document.getElementById('searchButton').addEventListener('click', onSearch);
+    document.getElementById('saveButton').addEventListener('click', () => saveEntry(false));
+    document.getElementById('saveUnmatchedButton').addEventListener('click', () => saveEntry(true));
+    document.getElementById('staffCode').addEventListener('change', boot);
+    document.getElementById('shelfNumber').addEventListener('change', boot);
+    document.getElementById('inputKeyword').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        onSearch();
+      }
+    });
+    // Initialize on load
+    window.addEventListener('DOMContentLoaded', async () => {
+      populateSelects();
+      await boot();
+    });
+  </script>
+</body>
+</html>
