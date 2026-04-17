@@ -233,7 +233,7 @@
         <button id="stopScanBtn" type="button" class="secondary">カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">背面カメラ優先 / EAN-13 優先 / 読取後に自動検索</div>
+      <div class="small">背面カメラ優先 / 読取後に自動検索 / 保存後に次スキャン待機</div>
     </div>
 
     <div class="card">
@@ -274,10 +274,13 @@
   <script>
     const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';
     const SCAN_REGION_ID = 'reader';
+    const SAME_CODE_IGNORE_MS = 1500;
 
     const state = {
       html5QrCode: null,
       scannerRunning: false,
+      scannerStarting: false,
+      scanLocked: false,
       lastScannedCode: '',
       lastScannedAt: 0,
       searchInFlight: false,
@@ -309,25 +312,26 @@
       populateOperatorCodes();
       populateLocations();
       bindEvents();
+      updateButtons();
       await boot();
     });
 
     function bindEvents() {
       els.operatorCode.addEventListener('change', async () => { await boot(); });
       els.location.addEventListener('change', async () => { await boot(); });
-
       els.startScanBtn.addEventListener('click', async () => { await startScanner(); });
       els.stopScanBtn.addEventListener('click', async () => { await stopScanner(); });
       els.searchBtn.addEventListener('click', async () => { await searchByInput(); });
 
       els.clearBtn.addEventListener('click', () => {
         clearSearchState(true);
-        setStatus('入力欄と候補をクリアしました。');
+        releaseScanLock('');
+        setStatus('入力欄と候補をクリアしました。次のスキャンを待機しています。');
       });
 
-      els.barcodeInput.addEventListener('keydown', async (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
+      els.barcodeInput.addEventListener('keydown', async (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
           await searchByInput();
         }
       });
@@ -366,19 +370,8 @@
           throw new Error(res && res.message ? res.message : 'boot failed');
         }
 
-        const inventoryDate =
-          res.inventoryDate ||
-          res.inventory_date ||
-          res.countDate ||
-          res.date ||
-          '-';
-
-        const entryCount =
-          res.entryCount ??
-          res.entry_count ??
-          res.inputCount ??
-          res.count ??
-          '-';
+        const inventoryDate = res.inventoryDate || res.inventory_date || res.countDate || res.date || '-';
+        const entryCount = res.entryCount ?? res.entry_count ?? res.inputCount ?? res.count ?? '-';
 
         els.inventoryDate.textContent = inventoryDate;
         els.entryCount.textContent = String(entryCount);
@@ -394,14 +387,23 @@
         setStatus('カメラはすでに起動中です。');
         return;
       }
+      if (state.scannerStarting) {
+        setStatus('カメラを起動中です。');
+        return;
+      }
+
+      state.scannerStarting = true;
+      updateButtons();
 
       try {
         if (!window.Html5Qrcode) {
           throw new Error('html5-qrcode の読み込みに失敗しています。');
         }
+        if (!window.isSecureContext) {
+          throw new Error('カメラ利用にはHTTPSが必要です。');
+        }
 
         setStatus('カメラを起動しています...');
-        state.html5QrCode = new Html5Qrcode(SCAN_REGION_ID);
 
         const scanConfig = {
           fps: 10,
@@ -410,7 +412,6 @@
             const height = Math.floor(width * 0.45);
             return { width, height };
           },
-          aspectRatio: 1.7778,
           disableFlip: false,
           formatsToSupport: [
             Html5QrcodeSupportedFormats.EAN_13,
@@ -423,33 +424,33 @@
         };
 
         const started = await startScannerWithFallback(scanConfig);
-
         if (!started) {
-          throw new Error('背面カメラを起動できませんでした。');
+          throw new Error('カメラを起動できませんでした。');
         }
 
-        state.scannerRunning = true;
+        releaseScanLock('');
         setStatus('カメラを起動しました。バーコードを読んでください。', 'ok');
       } catch (error) {
         await safeResetScanner();
         setStatus(`カメラ起動に失敗しました: ${error.message}`, 'error');
+      } finally {
+        state.scannerStarting = false;
+        updateButtons();
       }
     }
 
     async function startScannerWithFallback(scanConfig) {
-      const onSuccess = onScanSuccess;
-      const onFailure = () => {};
-
-      const tryConfigs = [
-        { facingMode: { exact: 'environment' } },
-        { facingMode: 'environment' }
+      const attempts = [
+        { config: { facingMode: { exact: 'environment' } } },
+        { config: { facingMode: 'environment' } }
       ];
 
-      for (const cameraConfig of tryConfigs) {
+      for (const attempt of attempts) {
         try {
-          await state.html5QrCode.start(cameraConfig, scanConfig, onSuccess, onFailure);
+          await createAndStartScanner(attempt.config, scanConfig);
           return true;
-        } catch (e) {
+        } catch (error) {
+          await safeResetScanner();
         }
       }
 
@@ -457,70 +458,87 @@
         const cameras = await Html5Qrcode.getCameras();
 
         if (Array.isArray(cameras) && cameras.length > 0) {
-          const rearCamera =
-            cameras.find(c => /back|rear|environment|wide/i.test(String(c.label || ''))) ||
-            cameras[cameras.length - 1];
+          const rearCameras = cameras.filter(camera =>
+            /back|rear|environment|wide|外|背面/i.test(String(camera.label || ''))
+          );
 
-          if (rearCamera && rearCamera.id) {
-            await state.html5QrCode.start(
-              rearCamera.id,
-              scanConfig,
-              onSuccess,
-              onFailure
-            );
-            return true;
+          const orderedCameras = rearCameras.length > 0
+            ? rearCameras.concat(cameras.filter(camera => !rearCameras.includes(camera)))
+            : cameras.slice().reverse();
+
+          for (const camera of orderedCameras) {
+            if (!camera || !camera.id) continue;
+
+            try {
+              await createAndStartScanner(camera.id, scanConfig);
+              return true;
+            } catch (error) {
+              await safeResetScanner();
+            }
           }
         }
-      } catch (e) {
+      } catch (error) {
+        await safeResetScanner();
       }
 
       return false;
     }
 
+    async function createAndStartScanner(cameraConfig, scanConfig) {
+      await safeResetScanner();
+      state.html5QrCode = new Html5Qrcode(SCAN_REGION_ID);
+      await state.html5QrCode.start(
+        cameraConfig,
+        scanConfig,
+        onScanSuccess,
+        () => {}
+      );
+      state.scannerRunning = true;
+    }
+
     async function stopScanner() {
-      try {
-        if (state.html5QrCode && state.scannerRunning) {
-          await state.html5QrCode.stop();
-          await state.html5QrCode.clear();
-        }
-      } catch (error) {
-      } finally {
-        state.scannerRunning = false;
-        state.html5QrCode = null;
-        setStatus('カメラを停止しました。');
-      }
+      await safeResetScanner();
+      releaseScanLock('');
+      setStatus('カメラを停止しました。');
+      updateButtons();
     }
 
     async function safeResetScanner() {
+      const scanner = state.html5QrCode;
+      state.html5QrCode = null;
+
       try {
-        if (state.html5QrCode) {
-          try {
-            await state.html5QrCode.stop();
-          } catch (e) {
-          }
-          try {
-            await state.html5QrCode.clear();
-          } catch (e) {
-          }
+        if (scanner) {
+          await scanner.stop();
         }
-      } finally {
-        state.scannerRunning = false;
-        state.html5QrCode = null;
+      } catch (error) {
       }
+
+      try {
+        if (scanner) {
+          await scanner.clear();
+        }
+      } catch (error) {
+      }
+
+      state.scannerRunning = false;
     }
 
     async function onScanSuccess(decodedText) {
       const now = Date.now();
       const normalized = String(decodedText || '').trim();
       if (!normalized) return;
+      if (state.scanLocked || state.searchInFlight || state.saveInFlight) return;
 
-      if (state.lastScannedCode === normalized && now - state.lastScannedAt < 1500) {
+      if (state.lastScannedCode === normalized && now - state.lastScannedAt < SAME_CODE_IGNORE_MS) {
         return;
       }
 
+      state.scanLocked = true;
       state.lastScannedCode = normalized;
       state.lastScannedAt = now;
       els.barcodeInput.value = normalized;
+
       setStatus(`読み取り成功: ${normalized}\n自動検索しています...`);
       await searchByInput();
     }
@@ -531,9 +549,10 @@
         setStatus('バーコード / JAN を入力してください。', 'error');
         return;
       }
-      if (state.searchInFlight) return;
+      if (state.searchInFlight || state.saveInFlight) return;
 
       state.searchInFlight = true;
+      updateButtons();
       clearCandidatesOnly();
 
       try {
@@ -563,7 +582,7 @@
           renderCandidates();
           renderSelectedProduct();
           els.candidateInfo.textContent = '候補1件のため自動選択しました。';
-          setStatus('候補1件のため自動選択しました。', 'ok');
+          setStatus('候補1件のため自動選択しました。数量を確認して一致保存してください。', 'ok');
           return;
         }
 
@@ -573,9 +592,10 @@
         els.candidateInfo.textContent = `候補が ${items.length} 件あります。1件タップしてください。`;
         setStatus(`候補が ${items.length} 件あります。選択してください。`, 'ok');
       } catch (error) {
-        setStatus(`検索に失敗しました: ${error.message}`, 'error');
+        setStatus(`検索に失敗しました: ${error.message}\n再読取する場合はクリアを押してください。`, 'error');
       } finally {
         state.searchInFlight = false;
+        updateButtons();
       }
     }
 
@@ -586,7 +606,7 @@
       items.forEach((item) => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'candidate-item' + (state.selectedProduct === item ? ' selected' : '');
+        btn.className = 'candidate-item' + (isSelectedProduct(item) ? ' selected' : '');
         btn.innerHTML = `
           <div class="candidate-main">${escapeHtml(getDisplayName(item))}</div>
           <div class="candidate-sub">${renderCandidateSub(item)}</div>
@@ -601,27 +621,57 @@
       });
     }
 
+    function isSelectedProduct(item) {
+      if (!state.selectedProduct || !item) return false;
+
+      const selectedIdentity = getProductIdentity(state.selectedProduct);
+      const itemIdentity = getProductIdentity(item);
+
+      if (selectedIdentity && itemIdentity) {
+        return selectedIdentity === itemIdentity;
+      }
+
+      return state.selectedProduct === item;
+    }
+
+    function getProductIdentity(item) {
+      return String(
+        item.productKey ||
+        item.product_key ||
+        item.productCode ||
+        item.product_code ||
+        item.code ||
+        item.jan ||
+        item.JAN ||
+        item.barcode ||
+        ''
+      );
+    }
+
     function renderCandidateSub(item) {
       const parts = [];
-      const code = item.productCode || item.product_code || item.code || '';
+      const code = item.productCode || item.product_code || item.code || item.productKey || item.product_key || '';
       const jan = item.jan || item.JAN || item.barcode || '';
-      const spec = item.spec || item.standard || item.model || '';
+      const spec = item.spec || item.standard || item.model || item.hinban || '';
       const maker = item.maker || item.brand || '';
+
       if (code) parts.push(`<span class="pill">商品コード: ${escapeHtml(String(code))}</span>`);
       if (jan) parts.push(`<span class="pill">JAN: ${escapeHtml(String(jan))}</span>`);
       if (maker) parts.push(`<span class="pill">メーカー: ${escapeHtml(String(maker))}</span>`);
       if (spec) parts.push(`<span class="pill">規格: ${escapeHtml(String(spec))}</span>`);
+
       return parts.join('');
     }
 
     function renderSelectedProduct() {
       const item = state.selectedProduct;
+
       if (!item) {
         els.selectedProductArea.innerHTML = `<div class="small">選択中の商品はありません。</div>`;
         return;
       }
 
-      const code = item.productCode || item.product_code || item.code || '-';
+      const code = item.productCode || item.product_code || item.code || item.productKey || item.product_key || '-';
       const jan = item.jan || item.JAN || item.barcode || '-';
 
       els.selectedProductArea.innerHTML = `
@@ -653,7 +703,7 @@
       }
 
       state.saveInFlight = true;
-      setSavingButtons(true);
+      updateButtons();
 
       try {
         setStatus('一致保存しています...');
@@ -671,14 +721,14 @@
           throw new Error(res && res.message ? res.message : 'save failed');
         }
 
-        setStatus('一致保存が完了しました。次のスキャンを待機しています。', 'ok');
-        afterSaveSuccess();
+        afterSaveSuccess(inputValue);
         await boot();
+        setStatus('一致保存が完了しました。次のスキャンを待機しています。', 'ok');
       } catch (error) {
         setStatus(`一致保存に失敗しました: ${error.message}`, 'error');
       } finally {
         state.saveInFlight = false;
-        setSavingButtons(false);
+        updateButtons();
       }
     }
 
@@ -695,7 +745,7 @@
       }
 
       state.saveInFlight = true;
-      setSavingButtons(true);
+      updateButtons();
 
       try {
         setStatus('候補なしでTEMP保存しています...');
@@ -712,31 +762,38 @@
           throw new Error(res && res.message ? res.message : 'save failed');
         }
 
-        setStatus('候補なしでTEMP保存が完了しました。次のスキャンを待機しています。', 'ok');
-        afterSaveSuccess();
+        afterSaveSuccess(inputValue);
         await boot();
+        setStatus('候補なしでTEMP保存が完了しました。次のスキャンを待機しています。', 'ok');
       } catch (error) {
         setStatus(`候補なし保存に失敗しました: ${error.message}`, 'error');
       } finally {
         state.saveInFlight = false;
-        setSavingButtons(false);
+        updateButtons();
       }
     }
 
     function parseQuantity() {
       const quantity = Number(els.quantity.value);
+
       if (!Number.isInteger(quantity) || quantity <= 0) {
         setStatus('数量は1以上の整数を入力してください。', 'error');
         return null;
       }
+
       return quantity;
     }
 
-    function afterSaveSuccess() {
-      els.barcodeInput.value = '';
-      els.quantity.value = '1';
+    function afterSaveSuccess(savedInputValue) {
       clearSearchState(false);
+      releaseScanLock(savedInputValue);
       els.barcodeInput.focus();
+    }
+
+    function releaseScanLock(recentCode) {
+      state.scanLocked = false;
+      state.lastScannedCode = String(recentCode || '').trim();
+      state.lastScannedAt = state.lastScannedCode ? Date.now() : 0;
     }
 
     function clearSearchState(clearInput) {
@@ -757,10 +814,17 @@
       els.candidateInfo.textContent = '検索結果を待っています。';
     }
 
-    function setSavingButtons(disabled) {
-      els.saveMatchedBtn.disabled = disabled;
-      els.saveUnmatchedBtn.disabled = disabled;
-      els.searchBtn.disabled = disabled;
+    function updateButtons() {
+      const busyStarting = state.scannerStarting;
+      const busySaving = state.saveInFlight;
+      const busySearching = state.searchInFlight;
+
+      els.startScanBtn.disabled = busyStarting || state.scannerRunning;
+      els.stopScanBtn.disabled = busyStarting || !state.scannerRunning;
+      els.searchBtn.disabled = busySaving || busySearching;
+      els.saveMatchedBtn.disabled = busySaving;
+      els.saveUnmatchedBtn.disabled = busySaving;
+      els.clearBtn.disabled = busySaving;
     }
 
     async function apiPost(payload) {
@@ -777,7 +841,7 @@
       let json;
       try {
         json = JSON.parse(text);
-      } catch (e) {
+      } catch (error) {
         throw new Error(`JSON解析失敗: ${text.slice(0, 300)}`);
       }
 
@@ -789,12 +853,18 @@
     }
 
     function getDisplayName(item) {
-      return item.productName || item.product_name || item.name || item.itemName || '名称未設定';
+      return item.productName ||
+        item.product_name ||
+        item.name ||
+        item.itemName ||
+        item.displayLabel ||
+        '名称未設定';
     }
 
     function setStatus(message, type) {
       els.statusBox.textContent = message;
       els.statusBox.className = 'status';
+
       if (type === 'error') {
         els.statusBox.classList.add('error');
       } else if (type === 'ok') {
