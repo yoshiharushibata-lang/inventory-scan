@@ -76,7 +76,7 @@
     }
 
     select,
-    input[type="text"],
+    input[type="search"],
     input[type="number"] {
       width: 100%;
       min-height: 44px;
@@ -309,8 +309,8 @@
 
     <div class="card">
       <h2>検索入力</h2>
-      <label for="barcodeInput">バーコード / JAN</label>
-      <input id="barcodeInput" type="text" inputmode="numeric" placeholder="スキャン結果または手入力" />
+      <label for="barcodeInput">バーコード / JAN / 商品コード / 品番 / 品名</label>
+      <input id="barcodeInput" type="search" inputmode="search" placeholder="バーコード・商品コード・品番・品名を入力" />
       <div style="height:10px;"></div>
       <div class="row">
         <button id="searchBtn" type="button">検索</button>
@@ -635,7 +635,7 @@
     async function searchByInput() {
       const keyword = String(els.barcodeInput.value || '').trim();
       if (!keyword) {
-        setStatus('バーコード / JAN を入力してください。', 'error');
+        setStatus('バーコード・商品コード・品番・品名を入力してください。', 'error');
         return;
       }
       if (state.searchInFlight || state.saveInFlight) return;
