@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>棚卸スキャン</title>
-  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
   <style>
     :root {
       --bg: #f6f7f9;
@@ -164,6 +164,46 @@
       font-weight: 700;
     }
 
+    #scannerWrap {
+      position: relative;
+      width: 100%;
+      min-height: 260px;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    #scannerViewport {
+      position: relative;
+      width: 100%;
+      min-height: 260px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #scannerViewport video,
+    #scannerViewport canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    #scannerGuide {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 82%;
+      height: 72px;
+      border: 2px solid #22c55e;
+      border-radius: 8px;
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
+      pointer-events: none;
+      z-index: 5;
+    }
+
     .candidate-list {
       display: grid;
       gap: 8px;
@@ -215,24 +255,8 @@
       color: var(--muted);
     }
 
-    .preview-wrap {
-      margin-top: 10px;
-    }
-
-    .preview-image {
-      width: 100%;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      display: none;
-      background: #fff;
-    }
-
     .hidden {
       display: none !important;
-    }
-
-    #decodeCanvas {
-      display: none;
     }
   </style>
 </head>
@@ -240,7 +264,7 @@
   <div class="wrap">
     <div class="card">
       <h1>棚卸スキャン</h1>
-      <div class="small">iPhone Safari では、背面カメラで撮影した画像からバーコードを読み取ります。</div>
+      <div class="small">iPhone Safari で JAN / EAN-13 をライブ読取します。読取後は自動検索されます。</div>
     </div>
 
     <div class="card">
@@ -270,23 +294,23 @@
 
     <div class="card">
       <h2>バーコード読取</h2>
-      <div class="row">
-        <button id="takePhotoBtn" type="button">写真でバーコードを読む</button>
-        <button id="retryPhotoBtn" type="button" class="secondary">再撮影</button>
+      <div id="scannerWrap">
+        <div id="scannerViewport"></div>
+        <div id="scannerGuide"></div>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">背面カメラでバーコードだけが大きく写るように撮影してください。撮影後に自動検索します。</div>
-      <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" class="hidden" />
-      <div class="preview-wrap">
-        <img id="photoPreview" class="preview-image" alt="撮影画像プレビュー" />
+      <div class="row">
+        <button id="startScanBtn" type="button">カメラ開始</button>
+        <button id="stopScanBtn" type="button" class="secondary">カメラ停止</button>
       </div>
-      <canvas id="decodeCanvas"></canvas>
+      <div style="height:10px;"></div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。</div>
     </div>
 
     <div class="card">
       <h2>検索入力</h2>
       <label for="barcodeInput">バーコード / JAN</label>
-      <input id="barcodeInput" type="text" inputmode="numeric" placeholder="撮影結果または手入力" />
+      <input id="barcodeInput" type="text" inputmode="numeric" placeholder="スキャン結果または手入力" />
       <div style="height:10px;"></div>
       <div class="row">
         <button id="searchBtn" type="button">検索</button>
@@ -320,18 +344,22 @@
 
   <script>
     const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';
-    const SAME_CODE_IGNORE_MS = 1500;
+    const SAME_CODE_IGNORE_MS = 1800;
+    const REQUIRED_STREAK = 2;
+    const MAX_ACCEPTABLE_ERROR = 0.18;
 
     const state = {
+      scannerStarting: false,
+      scannerRunning: false,
       scanLocked: false,
-      decodeInFlight: false,
       searchInFlight: false,
       saveInFlight: false,
-      lastScannedCode: '',
-      lastScannedAt: 0,
       selectedProduct: null,
       currentItems: [],
-      previewObjectUrl: null
+      lastAcceptedCode: '',
+      lastAcceptedAt: 0,
+      detectPrevCode: '',
+      detectStreak: 0
     };
 
     const els = {
@@ -339,11 +367,9 @@
       location: document.getElementById('location'),
       inventoryDate: document.getElementById('inventoryDate'),
       entryCount: document.getElementById('entryCount'),
-      takePhotoBtn: document.getElementById('takePhotoBtn'),
-      retryPhotoBtn: document.getElementById('retryPhotoBtn'),
-      barcodePhotoInput: document.getElementById('barcodePhotoInput'),
-      photoPreview: document.getElementById('photoPreview'),
-      decodeCanvas: document.getElementById('decodeCanvas'),
+      scannerViewport: document.getElementById('scannerViewport'),
+      startScanBtn: document.getElementById('startScanBtn'),
+      stopScanBtn: document.getElementById('stopScanBtn'),
       barcodeInput: document.getElementById('barcodeInput'),
       searchBtn: document.getElementById('searchBtn'),
       clearBtn: document.getElementById('clearBtn'),
@@ -368,24 +394,12 @@
       els.operatorCode.addEventListener('change', async () => { await boot(); });
       els.location.addEventListener('change', async () => { await boot(); });
 
-      els.takePhotoBtn.addEventListener('click', () => {
-        if (state.decodeInFlight || state.saveInFlight) return;
-        els.barcodePhotoInput.click();
+      els.startScanBtn.addEventListener('click', async () => {
+        await startScanner();
       });
 
-      els.retryPhotoBtn.addEventListener('click', () => {
-        if (state.decodeInFlight || state.saveInFlight) return;
-        els.barcodePhotoInput.value = '';
-        clearPreviewImage();
-        releaseScanLock('');
-        setStatus('再撮影できます。');
-        els.barcodePhotoInput.click();
-      });
-
-      els.barcodePhotoInput.addEventListener('change', async (event) => {
-        const file = event.target.files && event.target.files[0] ? event.target.files[0] : null;
-        if (!file) return;
-        await decodeBarcodeFromPhoto(file);
+      els.stopScanBtn.addEventListener('click', async () => {
+        await stopScanner();
       });
 
       els.searchBtn.addEventListener('click', async () => {
@@ -394,10 +408,8 @@
 
       els.clearBtn.addEventListener('click', () => {
         clearSearchState(true);
-        clearPreviewImage();
-        els.barcodePhotoInput.value = '';
         releaseScanLock('');
-        setStatus('入力欄と候補をクリアしました。');
+        setStatus('入力欄と候補をクリアしました。次のスキャンを待機しています。');
       });
 
       els.barcodeInput.addEventListener('keydown', async (event) => {
@@ -413,6 +425,12 @@
 
       els.saveUnmatchedBtn.addEventListener('click', async () => {
         await saveUnmatched();
+      });
+
+      document.addEventListener('visibilitychange', async () => {
+        if (document.hidden) {
+          await stopScanner({ silent: true });
+        }
       });
     }
 
@@ -469,153 +487,149 @@
       }
     }
 
-    async function decodeBarcodeFromPhoto(file) {
-      if (state.decodeInFlight || state.searchInFlight || state.saveInFlight) return;
+    async function startScanner() {
+      if (state.scannerRunning) {
+        setStatus('カメラはすでに起動中です。');
+        return;
+      }
+      if (state.scannerStarting) {
+        setStatus('カメラを起動中です。');
+        return;
+      }
 
-      state.decodeInFlight = true;
+      state.scannerStarting = true;
       updateButtons();
 
       try {
-        setPreviewImage(file);
-        setStatus('画像からバーコードを読み取っています...');
+        setStatus('カメラを起動しています...');
 
-        const image = await fileToImage(file);
-        const decodedText = decodeWithZXingFromImage(image);
-        const normalized = String(decodedText || '').trim();
+        await new Promise((resolve, reject) => {
+          Quagga.init({
+            inputStream: {
+              type: 'LiveStream',
+              target: els.scannerViewport,
+              constraints: {
+                facingMode: { ideal: 'environment' },
+                aspectRatio: { min: 1, max: 2 }
+              },
+              area: {
+                top: '35%',
+                right: '8%',
+                left: '8%',
+                bottom: '35%'
+              }
+            },
+            locator: {
+              patchSize: 'medium',
+              halfSample: false
+            },
+            numOfWorkers: 0,
+            locate: true,
+            decoder: {
+              readers: ['ean_reader']
+            }
+          }, (err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve();
+          });
+        });
 
-        if (!normalized) {
-          throw new Error('バーコードを読み取れませんでした。バーコードをもっと大きく、まっすぐ写して再撮影してください。');
-        }
+        resetDetectMemory();
+        Quagga.offDetected(onQuaggaDetected);
+        Quagga.onDetected(onQuaggaDetected);
+        Quagga.start();
 
-        const now = Date.now();
-        if (state.lastScannedCode === normalized && now - state.lastScannedAt < SAME_CODE_IGNORE_MS) {
-          setStatus('同じコードを連続で読み取りました。少し待ってから再撮影してください。');
-          return;
-        }
-
-        state.scanLocked = true;
-        state.lastScannedCode = normalized;
-        state.lastScannedAt = now;
-
-        els.barcodeInput.value = normalized;
-        setStatus(`読み取り成功: ${normalized}\n自動検索しています...`);
-        await searchByInput();
+        state.scannerRunning = true;
+        setStatus('カメラを起動しました。バーコードを読んでください。', 'ok');
       } catch (error) {
-        setStatus(`画像読取に失敗しました: ${error.message}`, 'error');
+        setStatus(`カメラ起動に失敗しました: ${error.message || error}`, 'error');
       } finally {
-        state.decodeInFlight = false;
+        state.scannerStarting = false;
         updateButtons();
       }
     }
 
-    function fileToImage(file) {
-      return new Promise((resolve, reject) => {
-        const objectUrl = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = () => {
-          URL.revokeObjectURL(objectUrl);
-          resolve(img);
-        };
-        img.onerror = () => {
-          URL.revokeObjectURL(objectUrl);
-          reject(new Error('画像の読み込みに失敗しました。'));
-        };
-        img.src = objectUrl;
-      });
-    }
-
-    function buildZXingReader() {
-      const hints = new Map();
-      const formats = [
-        ZXing.BarcodeFormat.EAN_13,
-        ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.UPC_A,
-        ZXing.BarcodeFormat.UPC_E,
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.ITF
-      ];
-      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
-      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-
-      const reader = new ZXing.MultiFormatReader();
-      reader.setHints(hints);
-      return reader;
-    }
-
-    function decodeWithZXingFromImage(image) {
-      const reader = buildZXingReader();
-
-      const attempts = [
-        { x: 0.00, y: 0.00, w: 1.00, h: 1.00 },
-        { x: 0.10, y: 0.45, w: 0.80, h: 0.22 },
-        { x: 0.15, y: 0.40, w: 0.70, h: 0.26 },
-        { x: 0.20, y: 0.35, w: 0.60, h: 0.30 },
-        { x: 0.05, y: 0.35, w: 0.90, h: 0.35 },
-        { x: 0.10, y: 0.25, w: 0.80, h: 0.45 }
-      ];
-
-      for (const area of attempts) {
-        const text = tryDecodeArea(reader, image, area);
-        if (text) return text;
+    async function stopScanner(options = {}) {
+      try {
+        Quagga.offDetected(onQuaggaDetected);
+      } catch (e) {
       }
-
-      return '';
-    }
-
-    function tryDecodeArea(reader, image, area) {
-      const sourceWidth = image.naturalWidth || image.width;
-      const sourceHeight = image.naturalHeight || image.height;
-
-      const sx = Math.max(0, Math.floor(sourceWidth * area.x));
-      const sy = Math.max(0, Math.floor(sourceHeight * area.y));
-      const sw = Math.max(1, Math.floor(sourceWidth * area.w));
-      const sh = Math.max(1, Math.floor(sourceHeight * area.h));
-
-      const maxWidth = 2200;
-      const scale = Math.min(1, maxWidth / sw);
-      const dw = Math.max(1, Math.floor(sw * scale));
-      const dh = Math.max(1, Math.floor(sh * scale));
-
-      els.decodeCanvas.width = dw;
-      els.decodeCanvas.height = dh;
-
-      const ctx = els.decodeCanvas.getContext('2d', { willReadFrequently: true });
-      ctx.clearRect(0, 0, dw, dh);
-      ctx.drawImage(image, sx, sy, sw, sh, 0, 0, dw, dh);
-
-      const imageData = ctx.getImageData(0, 0, dw, dh);
-      const luminanceSource = new ZXing.RGBLuminanceSource(imageData.data, dw, dh);
-      const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
 
       try {
-        const result = reader.decode(binaryBitmap);
-        return result && result.getText ? result.getText() : '';
-      } catch (error) {
-        return '';
-      } finally {
-        try {
-          reader.reset();
-        } catch (e) {
+        if (state.scannerRunning) {
+          Quagga.stop();
         }
+      } catch (e) {
+      }
+
+      state.scannerRunning = false;
+      resetDetectMemory();
+      updateButtons();
+
+      if (!options.silent) {
+        setStatus('カメラを停止しました。');
       }
     }
 
-    function setPreviewImage(file) {
-      clearPreviewImage();
-      const objectUrl = URL.createObjectURL(file);
-      state.previewObjectUrl = objectUrl;
-      els.photoPreview.src = objectUrl;
-      els.photoPreview.style.display = 'block';
+    function onQuaggaDetected(result) {
+      if (state.scanLocked || state.searchInFlight || state.saveInFlight) return;
+      if (!result || !result.codeResult || !result.codeResult.code) return;
+
+      const raw = String(result.codeResult.code || '').trim();
+      if (!raw) return;
+
+      const meanError = getMeanError(result);
+      if (meanError !== null && meanError > MAX_ACCEPTABLE_ERROR) return;
+
+      if (state.detectPrevCode === raw) {
+        state.detectStreak += 1;
+      } else {
+        state.detectPrevCode = raw;
+        state.detectStreak = 1;
+      }
+
+      if (state.detectStreak < REQUIRED_STREAK) return;
+
+      const now = Date.now();
+      if (state.lastAcceptedCode === raw && now - state.lastAcceptedAt < SAME_CODE_IGNORE_MS) {
+        return;
+      }
+
+      state.scanLocked = true;
+      state.lastAcceptedCode = raw;
+      state.lastAcceptedAt = now;
+      resetDetectMemory();
+
+      els.barcodeInput.value = raw;
+      if (navigator.vibrate) {
+        try { navigator.vibrate(80); } catch (e) {}
+      }
+
+      setStatus(`読み取り成功: ${raw}\n自動検索しています...`);
+      searchByInput();
     }
 
-    function clearPreviewImage() {
-      if (state.previewObjectUrl) {
-        URL.revokeObjectURL(state.previewObjectUrl);
-        state.previewObjectUrl = null;
-      }
-      els.photoPreview.removeAttribute('src');
-      els.photoPreview.style.display = 'none';
+    function getMeanError(result) {
+      const decodedCodes = result && result.codeResult && result.codeResult.decodedCodes
+        ? result.codeResult.decodedCodes
+        : null;
+
+      if (!Array.isArray(decodedCodes)) return null;
+
+      const values = decodedCodes
+        .map(item => item && typeof item.error === 'number' ? item.error : null)
+        .filter(v => v !== null && Number.isFinite(v));
+
+      if (values.length === 0) return null;
+      return values.reduce((a, b) => a + b, 0) / values.length;
+    }
+
+    function resetDetectMemory() {
+      state.detectPrevCode = '';
+      state.detectStreak = 0;
     }
 
     async function searchByInput() {
@@ -698,10 +712,8 @@
 
     function isSelectedProduct(item) {
       if (!state.selectedProduct || !item) return false;
-
       const a = getProductIdentity(state.selectedProduct);
       const b = getProductIdentity(item);
-
       if (a && b) return a === b;
       return state.selectedProduct === item;
     }
@@ -794,7 +806,7 @@
 
         afterSaveSuccess(inputValue);
         await boot();
-        setStatus('一致保存が完了しました。次の読取を待機しています。', 'ok');
+        setStatus('一致保存が完了しました。次のスキャンを待機しています。', 'ok');
       } catch (error) {
         setStatus(`一致保存に失敗しました: ${error.message}`, 'error');
       } finally {
@@ -835,7 +847,7 @@
 
         afterSaveSuccess(inputValue);
         await boot();
-        setStatus('候補なしでTEMP保存が完了しました。次の読取を待機しています。', 'ok');
+        setStatus('候補なしでTEMP保存が完了しました。次のスキャンを待機しています。', 'ok');
       } catch (error) {
         setStatus(`候補なし保存に失敗しました: ${error.message}`, 'error');
       } finally {
@@ -856,16 +868,15 @@
     function afterSaveSuccess(savedInputValue) {
       clearSearchState(false);
       els.barcodeInput.value = '';
-      els.barcodePhotoInput.value = '';
-      clearPreviewImage();
       releaseScanLock(savedInputValue);
       els.barcodeInput.focus();
     }
 
     function releaseScanLock(recentCode) {
       state.scanLocked = false;
-      state.lastScannedCode = String(recentCode || '').trim();
-      state.lastScannedAt = state.lastScannedCode ? Date.now() : 0;
+      state.lastAcceptedCode = String(recentCode || '').trim();
+      state.lastAcceptedAt = state.lastAcceptedCode ? Date.now() : 0;
+      resetDetectMemory();
     }
 
     function clearSearchState(clearInput) {
@@ -887,9 +898,9 @@
     }
 
     function updateButtons() {
-      const busy = state.decodeInFlight || state.searchInFlight || state.saveInFlight;
-      els.takePhotoBtn.disabled = busy;
-      els.retryPhotoBtn.disabled = busy;
+      const busy = state.scannerStarting || state.searchInFlight || state.saveInFlight;
+      els.startScanBtn.disabled = state.scannerRunning || state.scannerStarting;
+      els.stopScanBtn.disabled = !state.scannerRunning && !state.scannerStarting;
       els.searchBtn.disabled = busy;
       els.clearBtn.disabled = state.saveInFlight;
       els.saveMatchedBtn.disabled = state.saveInFlight;
