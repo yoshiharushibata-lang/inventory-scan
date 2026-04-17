@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>棚卸スキャン</title>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     :root {
       --bg: #f6f7f9;
@@ -400,72 +400,81 @@
           throw new Error('html5-qrcode の読み込みに失敗しています。');
         }
 
+        setStatus('カメラを起動しています...');
         state.html5QrCode = new Html5Qrcode(SCAN_REGION_ID);
 
-        const config = {
-          fps: 8,
-          qrbox: { width: 280, height: 140 },
+        const scanConfig = {
+          fps: 10,
+          qrbox: (viewfinderWidth) => {
+            const width = Math.floor(Math.min(viewfinderWidth * 0.9, 420));
+            const height = Math.floor(width * 0.45);
+            return { width, height };
+          },
           aspectRatio: 1.7778,
           disableFlip: false,
           formatsToSupport: [
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.EAN_8,
             Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
             Html5QrcodeSupportedFormats.UPC_A,
             Html5QrcodeSupportedFormats.UPC_E
           ]
         };
 
-        let started = false;
-
-        try {
-          await state.html5QrCode.start(
-            { facingMode: { exact: 'environment' } },
-            config,
-            onScanSuccess,
-            () => {}
-          );
-          started = true;
-        } catch (e1) {
-        }
+        const started = await startScannerWithFallback(scanConfig);
 
         if (!started) {
-          try {
-            await state.html5QrCode.start(
-              { facingMode: 'environment' },
-              config,
-              onScanSuccess,
-              () => {}
-            );
-            started = true;
-          } catch (e2) {
-          }
-        }
-
-        if (!started) {
-          const cameras = await Html5Qrcode.getCameras();
-          if (!cameras || cameras.length === 0) {
-            throw new Error('利用可能なカメラが見つかりません。');
-          }
-
-          const backCamera =
-            cameras.find(c => /back|rear|environment/i.test(`${c.label || ''}`)) ||
-            cameras[cameras.length - 1];
-
-          await state.html5QrCode.start(
-            backCamera.id,
-            config,
-            onScanSuccess,
-            () => {}
-          );
+          throw new Error('背面カメラを起動できませんでした。');
         }
 
         state.scannerRunning = true;
         setStatus('カメラを起動しました。バーコードを読んでください。', 'ok');
       } catch (error) {
-        state.scannerRunning = false;
+        await safeResetScanner();
         setStatus(`カメラ起動に失敗しました: ${error.message}`, 'error');
       }
+    }
+
+    async function startScannerWithFallback(scanConfig) {
+      const onSuccess = onScanSuccess;
+      const onFailure = () => {};
+
+      const tryConfigs = [
+        { facingMode: { exact: 'environment' } },
+        { facingMode: 'environment' }
+      ];
+
+      for (const cameraConfig of tryConfigs) {
+        try {
+          await state.html5QrCode.start(cameraConfig, scanConfig, onSuccess, onFailure);
+          return true;
+        } catch (e) {
+        }
+      }
+
+      try {
+        const cameras = await Html5Qrcode.getCameras();
+
+        if (Array.isArray(cameras) && cameras.length > 0) {
+          const rearCamera =
+            cameras.find(c => /back|rear|environment|wide/i.test(String(c.label || ''))) ||
+            cameras[cameras.length - 1];
+
+          if (rearCamera && rearCamera.id) {
+            await state.html5QrCode.start(
+              rearCamera.id,
+              scanConfig,
+              onSuccess,
+              onFailure
+            );
+            return true;
+          }
+        }
+      } catch (e) {
+      }
+
+      return false;
     }
 
     async function stopScanner() {
@@ -479,6 +488,24 @@
         state.scannerRunning = false;
         state.html5QrCode = null;
         setStatus('カメラを停止しました。');
+      }
+    }
+
+    async function safeResetScanner() {
+      try {
+        if (state.html5QrCode) {
+          try {
+            await state.html5QrCode.stop();
+          } catch (e) {
+          }
+          try {
+            await state.html5QrCode.clear();
+          } catch (e) {
+          }
+        }
+      } finally {
+        state.scannerRunning = false;
+        state.html5QrCode = null;
       }
     }
 
