@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>棚卸スキャン</title>
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
   <style>
     :root {
       --bg: #f6f7f9;
@@ -230,6 +230,10 @@
     .hidden {
       display: none !important;
     }
+
+    #decodeCanvas {
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -271,11 +275,12 @@
         <button id="retryPhotoBtn" type="button" class="secondary">再撮影</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">背面カメラでバーコードを撮影してください。撮影後に自動検索します。</div>
+      <div class="small">背面カメラでバーコードだけが大きく写るように撮影してください。撮影後に自動検索します。</div>
       <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" class="hidden" />
       <div class="preview-wrap">
         <img id="photoPreview" class="preview-image" alt="撮影画像プレビュー" />
       </div>
+      <canvas id="decodeCanvas"></canvas>
     </div>
 
     <div class="card">
@@ -338,6 +343,7 @@
       retryPhotoBtn: document.getElementById('retryPhotoBtn'),
       barcodePhotoInput: document.getElementById('barcodePhotoInput'),
       photoPreview: document.getElementById('photoPreview'),
+      decodeCanvas: document.getElementById('decodeCanvas'),
       barcodeInput: document.getElementById('barcodeInput'),
       searchBtn: document.getElementById('searchBtn'),
       clearBtn: document.getElementById('clearBtn'),
@@ -473,21 +479,12 @@
         setPreviewImage(file);
         setStatus('画像からバーコードを読み取っています...');
 
-        const scanner = new Html5Qrcode('reader-dummy-not-used');
-        let decodedText = '';
-
-        try {
-          decodedText = await scanner.scanFile(file, false);
-        } finally {
-          try {
-            await scanner.clear();
-          } catch (e) {
-          }
-        }
-
+        const image = await fileToImage(file);
+        const decodedText = decodeWithZXingFromImage(image);
         const normalized = String(decodedText || '').trim();
+
         if (!normalized) {
-          throw new Error('バーコードを読み取れませんでした。少し離して、明るい場所で再撮影してください。');
+          throw new Error('バーコードを読み取れませんでした。バーコードをもっと大きく、まっすぐ写して再撮影してください。');
         }
 
         const now = Date.now();
@@ -508,6 +505,99 @@
       } finally {
         state.decodeInFlight = false;
         updateButtons();
+      }
+    }
+
+    function fileToImage(file) {
+      return new Promise((resolve, reject) => {
+        const objectUrl = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(objectUrl);
+          resolve(img);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error('画像の読み込みに失敗しました。'));
+        };
+        img.src = objectUrl;
+      });
+    }
+
+    function buildZXingReader() {
+      const hints = new Map();
+      const formats = [
+        ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.UPC_A,
+        ZXing.BarcodeFormat.UPC_E,
+        ZXing.BarcodeFormat.CODE_128,
+        ZXing.BarcodeFormat.CODE_39,
+        ZXing.BarcodeFormat.ITF
+      ];
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+      const reader = new ZXing.MultiFormatReader();
+      reader.setHints(hints);
+      return reader;
+    }
+
+    function decodeWithZXingFromImage(image) {
+      const reader = buildZXingReader();
+
+      const attempts = [
+        { x: 0.00, y: 0.00, w: 1.00, h: 1.00 },
+        { x: 0.10, y: 0.45, w: 0.80, h: 0.22 },
+        { x: 0.15, y: 0.40, w: 0.70, h: 0.26 },
+        { x: 0.20, y: 0.35, w: 0.60, h: 0.30 },
+        { x: 0.05, y: 0.35, w: 0.90, h: 0.35 },
+        { x: 0.10, y: 0.25, w: 0.80, h: 0.45 }
+      ];
+
+      for (const area of attempts) {
+        const text = tryDecodeArea(reader, image, area);
+        if (text) return text;
+      }
+
+      return '';
+    }
+
+    function tryDecodeArea(reader, image, area) {
+      const sourceWidth = image.naturalWidth || image.width;
+      const sourceHeight = image.naturalHeight || image.height;
+
+      const sx = Math.max(0, Math.floor(sourceWidth * area.x));
+      const sy = Math.max(0, Math.floor(sourceHeight * area.y));
+      const sw = Math.max(1, Math.floor(sourceWidth * area.w));
+      const sh = Math.max(1, Math.floor(sourceHeight * area.h));
+
+      const maxWidth = 2200;
+      const scale = Math.min(1, maxWidth / sw);
+      const dw = Math.max(1, Math.floor(sw * scale));
+      const dh = Math.max(1, Math.floor(sh * scale));
+
+      els.decodeCanvas.width = dw;
+      els.decodeCanvas.height = dh;
+
+      const ctx = els.decodeCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.clearRect(0, 0, dw, dh);
+      ctx.drawImage(image, sx, sy, sw, sh, 0, 0, dw, dh);
+
+      const imageData = ctx.getImageData(0, 0, dw, dh);
+      const luminanceSource = new ZXing.RGBLuminanceSource(imageData.data, dw, dh);
+      const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
+
+      try {
+        const result = reader.decode(binaryBitmap);
+        return result && result.getText ? result.getText() : '';
+      } catch (error) {
+        return '';
+      } finally {
+        try {
+          reader.reset();
+        } catch (e) {
+        }
       }
     }
 
