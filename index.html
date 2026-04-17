@@ -401,17 +401,9 @@
         }
 
         state.html5QrCode = new Html5Qrcode(SCAN_REGION_ID);
-        const cameras = await Html5Qrcode.getCameras();
-        if (!cameras || cameras.length === 0) {
-          throw new Error('利用可能なカメラが見つかりません。');
-        }
-
-        let preferredCameraId = cameras[0].id;
-        const backCamera = cameras.find(c => /back|rear|environment/i.test(`${c.label || ''}`));
-        if (backCamera) preferredCameraId = backCamera.id;
 
         await state.html5QrCode.start(
-          { deviceId: { exact: preferredCameraId } },
+          { facingMode: 'environment' },
           {
             fps: 10,
             qrbox: (viewfinderWidth) => {
