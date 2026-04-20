@@ -76,7 +76,7 @@
     }
 
     select,
-    input[type="search"],
+    input[type="text"],
     input[type="number"] {
       width: 100%;
       min-height: 44px;
@@ -219,6 +219,7 @@
       color: var(--text);
       cursor: pointer;
       width: 100%;
+      display: block;
     }
 
     .candidate-item.selected {
@@ -254,17 +255,13 @@
       font-size: 12px;
       color: var(--muted);
     }
-
-    .hidden {
-      display: none !important;
-    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>棚卸スキャン</h1>
-      <div class="small">iPhone Safari で JAN / EAN-13 をライブ読取します。読取後は自動検索されます。</div>
+      <div class="small">安定性優先のため、1回読取ごとにカメラを停止します。次を読むときは再度「カメラ開始」を押してください。</div>
     </div>
 
     <div class="card">
@@ -304,13 +301,13 @@
         <button id="stopScanBtn" type="button" class="secondary">カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。</div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。20秒で自動停止します。</div>
     </div>
 
     <div class="card">
       <h2>検索入力</h2>
       <label for="barcodeInput">バーコード / JAN / 商品コード / 品番 / 品名</label>
-      <input id="barcodeInput" type="search" inputmode="search" placeholder="バーコード・商品コード・品番・品名を入力" />
+      <input id="barcodeInput" type="text" inputmode="text" placeholder="スキャン結果または手入力" />
       <div style="height:10px;"></div>
       <div class="row">
         <button id="searchBtn" type="button">検索</button>
@@ -344,9 +341,10 @@
 
   <script>
     const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';
-    const SAME_CODE_IGNORE_MS = 1800;
+    const SAME_CODE_IGNORE_MS = 2000;
     const REQUIRED_STREAK = 2;
-    const MAX_ACCEPTABLE_ERROR = 0.18;
+    const MAX_ACCEPTABLE_ERROR = 0.20;
+    const SCAN_TIMEOUT_MS = 20000;
 
     const state = {
       scannerStarting: false,
@@ -359,7 +357,8 @@
       lastAcceptedCode: '',
       lastAcceptedAt: 0,
       detectPrevCode: '',
-      detectStreak: 0
+      detectStreak: 0,
+      scanTimeoutId: null
     };
 
     const els = {
@@ -399,7 +398,7 @@
       });
 
       els.stopScanBtn.addEventListener('click', async () => {
-        await stopScanner();
+        await stopScanner({ silent: false, keepLock: false });
       });
 
       els.searchBtn.addEventListener('click', async () => {
@@ -409,7 +408,7 @@
       els.clearBtn.addEventListener('click', () => {
         clearSearchState(true);
         releaseScanLock('');
-        setStatus('入力欄と候補をクリアしました。次のスキャンを待機しています。');
+        setStatus('入力欄と候補をクリアしました。次を読むときは「カメラ開始」を押してください。');
       });
 
       els.barcodeInput.addEventListener('keydown', async (event) => {
@@ -429,7 +428,7 @@
 
       document.addEventListener('visibilitychange', async () => {
         if (document.hidden) {
-          await stopScanner({ silent: true });
+          await stopScanner({ silent: true, keepLock: true });
         }
       });
     }
@@ -510,21 +509,24 @@
               target: els.scannerViewport,
               constraints: {
                 facingMode: { ideal: 'environment' },
-                aspectRatio: { min: 1, max: 2 }
+                width: { ideal: 960 },
+                height: { ideal: 540 },
+                aspectRatio: { ideal: 1.7778 }
               },
               area: {
-                top: '35%',
+                top: '38%',
                 right: '8%',
                 left: '8%',
-                bottom: '35%'
+                bottom: '38%'
               }
             },
             locator: {
-              patchSize: 'medium',
+              patchSize: 'large',
               halfSample: false
             },
             numOfWorkers: 0,
-            locate: true,
+            frequency: 4,
+            locate: false,
             decoder: {
               readers: ['ean_reader']
             }
@@ -538,12 +540,18 @@
         });
 
         resetDetectMemory();
+        clearScanTimeout();
         Quagga.offDetected(onQuaggaDetected);
         Quagga.onDetected(onQuaggaDetected);
         Quagga.start();
 
         state.scannerRunning = true;
-        setStatus('カメラを起動しました。バーコードを読んでください。', 'ok');
+        state.scanTimeoutId = setTimeout(async () => {
+          await stopScanner({ silent: true, keepLock: true });
+          setStatus('20秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');
+        }, SCAN_TIMEOUT_MS);
+
+        setStatus('カメラを起動しました。読めたら自動で停止して検索します。', 'ok');
       } catch (error) {
         setStatus(`カメラ起動に失敗しました: ${error.message || error}`, 'error');
       } finally {
@@ -553,6 +561,8 @@
     }
 
     async function stopScanner(options = {}) {
+      clearScanTimeout();
+
       try {
         Quagga.offDetected(onQuaggaDetected);
       } catch (e) {
@@ -569,12 +579,23 @@
       resetDetectMemory();
       updateButtons();
 
+      if (!options.keepLock) {
+        releaseScanLock('');
+      }
+
       if (!options.silent) {
         setStatus('カメラを停止しました。');
       }
     }
 
-    function onQuaggaDetected(result) {
+    function clearScanTimeout() {
+      if (state.scanTimeoutId) {
+        clearTimeout(state.scanTimeoutId);
+        state.scanTimeoutId = null;
+      }
+    }
+
+    async function onQuaggaDetected(result) {
       if (state.scanLocked || state.searchInFlight || state.saveInFlight) return;
       if (!result || !result.codeResult || !result.codeResult.code) return;
 
@@ -605,11 +626,12 @@
 
       els.barcodeInput.value = raw;
       if (navigator.vibrate) {
-        try { navigator.vibrate(80); } catch (e) {}
+        try { navigator.vibrate(60); } catch (e) {}
       }
 
-      setStatus(`読み取り成功: ${raw}\n自動検索しています...`);
-      searchByInput();
+      await stopScanner({ silent: true, keepLock: true });
+      setStatus(`読み取り成功: ${raw}\n自動検索しています...`, 'ok');
+      await searchByInput();
     }
 
     function getMeanError(result) {
@@ -635,7 +657,7 @@
     async function searchByInput() {
       const keyword = String(els.barcodeInput.value || '').trim();
       if (!keyword) {
-        setStatus('バーコード・商品コード・品番・品名を入力してください。', 'error');
+        setStatus('バーコード / JAN / 商品コード / 品番 / 品名を入力してください。', 'error');
         return;
       }
       if (state.searchInFlight || state.saveInFlight) return;
@@ -736,7 +758,7 @@
       const parts = [];
       const code = item.productCode || item.product_code || item.code || item.productKey || item.product_key || '';
       const jan = item.jan || item.JAN || item.barcode || '';
-      const spec = item.spec || item.standard || item.model || item.hinban || '';
+      const spec = item.hinban || item.spec || item.standard || item.model || '';
       const maker = item.maker || item.brand || '';
 
       if (code) parts.push(`<span class="pill">商品コード: ${escapeHtml(String(code))}</span>`);
@@ -806,7 +828,7 @@
 
         afterSaveSuccess(inputValue);
         await boot();
-        setStatus('一致保存が完了しました。次のスキャンを待機しています。', 'ok');
+        setStatus('一致保存が完了しました。次を読むときは「カメラ開始」を押してください。', 'ok');
       } catch (error) {
         setStatus(`一致保存に失敗しました: ${error.message}`, 'error');
       } finally {
@@ -847,7 +869,7 @@
 
         afterSaveSuccess(inputValue);
         await boot();
-        setStatus('候補なしでTEMP保存が完了しました。次のスキャンを待機しています。', 'ok');
+        setStatus('候補なしでTEMP保存が完了しました。次を読むときは「カメラ開始」を押してください。', 'ok');
       } catch (error) {
         setStatus(`候補なし保存に失敗しました: ${error.message}`, 'error');
       } finally {
