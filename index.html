@@ -270,10 +270,12 @@
       <div class="grid grid-2">
         <div>
           <label for="operatorCode">担当者コード</label>
+          <!-- オプションはスクリプトで生成 -->
           <select id="operatorCode"></select>
         </div>
         <div>
           <label for="location">棚番号</label>
+          <!-- オプションはスクリプトで生成 -->
           <select id="location"></select>
         </div>
       </div>
@@ -302,7 +304,7 @@
         <button id="stopScanBtn" type="button" class="secondary" disabled>カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。15秒で自動停止します。</div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。曲面や反射がある場合は、真正面から少し角度を変えて光の映り込みを避けてください。15秒で自動停止します。</div>
     </div>
 
     <div class="card">
@@ -348,7 +350,7 @@
     // 読み取り成功まで必要な連続検出回数
     const REQUIRED_STREAK = 2;
     // デコード時の許容誤差
-    const MAX_ACCEPTABLE_ERROR = 0.20;
+    const MAX_ACCEPTABLE_ERROR = 0.25;
     // スキャンの自動停止タイムアウト(ms) - 15秒
     const SCAN_TIMEOUT_MS = 15000;
 
@@ -363,9 +365,15 @@
       currentItems: [],
       lastAcceptedCode: '',
       lastAcceptedAt: 0,
+      lastInputMethod: 'manual_search',
+      lastSearchKeyword: '',
+      lastSearchResultCount: null,
       detectPrevCode: '',
       detectStreak: 0,
-      scanTimeoutId: null
+      scanTimeoutId: null,
+      scannerStartSeq: 0,
+      scannerCancelRequested: false,
+      bootRequestId: 0
     };
 
     // DOM要素
@@ -412,7 +420,7 @@
       });
 
       els.searchBtn.addEventListener('click', async () => {
-        await searchByInput();
+        await searchByInput('manual_search');
       });
 
       els.clearBtn.addEventListener('click', () => {
@@ -424,7 +432,14 @@
       els.barcodeInput.addEventListener('keydown', async (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
-          await searchByInput();
+          await searchByInput('manual_search');
+        }
+      });
+
+      els.barcodeInput.addEventListener('input', () => {
+        state.lastInputMethod = 'manual_search';
+        if (String(els.barcodeInput.value || '').trim() !== state.lastSearchKeyword) {
+          state.lastSearchResultCount = null;
         }
       });
 
@@ -464,14 +479,24 @@
     }
 
     // boot: 初期データ読み込み
-    async function boot() {
+    async function boot(options = {}) {
+      const requestId = ++state.bootRequestId;
+      const operatorCode = els.operatorCode.value;
+      const location = els.location.value;
+
       try {
-        setStatus('初期データを取得しています...');
+        if (!options.silentStart) {
+          setStatus('初期データを取得しています...');
+        }
         const res = await apiPost({
           action: 'boot',
-          operatorCode: els.operatorCode.value,
-          location: els.location.value
+          operatorCode,
+          location
         });
+
+        if (requestId !== state.bootRequestId) {
+          return false;
+        }
 
         if (!res || res.ok === false) {
           throw new Error(res && res.message ? res.message : 'boot failed');
@@ -494,9 +519,21 @@
         els.inventoryDate.textContent = inventoryDate;
         els.entryCount.textContent = String(entryCount);
 
-        setStatus('初期表示に成功しました。', 'ok');
+        if (!options.silentSuccess) {
+          setStatus('初期表示に成功しました。', 'ok');
+        }
+        return true;
       } catch (error) {
-        setStatus(`初期データ取得に失敗しました: ${error.message}`, 'error');
+        if (requestId !== state.bootRequestId) {
+          return false;
+        }
+        if (!options.silentFailure) {
+          setStatus(`初期データ取得に失敗しました: ${error.message}`, 'error');
+        }
+        if (options.throwOnFailure) {
+          throw error;
+        }
+        return false;
       }
     }
 
@@ -511,6 +548,8 @@
         return;
       }
 
+      const startSeq = ++state.scannerStartSeq;
+      state.scannerCancelRequested = false;
       state.scannerStarting = true;
       updateButtons();
 
@@ -528,10 +567,10 @@
                 height: { ideal: 600 }
               },
               area: {
-                top: '38%',
+                top: '32%',
                 right: '8%',
                 left: '8%',
-                bottom: '38%'
+                bottom: '32%'
               }
             },
             locator: {
@@ -553,6 +592,12 @@
           });
         });
 
+        if (state.scannerCancelRequested || startSeq !== state.scannerStartSeq) {
+          try { Quagga.stop(); } catch (e) {}
+          state.scannerRunning = false;
+          return;
+        }
+
         resetDetectMemory();
         clearScanTimeout();
         Quagga.offDetected(onQuaggaDetected);
@@ -567,15 +612,21 @@
 
         setStatus('カメラを起動しました。読めたら自動で停止します。続けて読む場合は再度「カメラ開始」を押してください。', 'ok');
       } catch (error) {
-        setStatus(`カメラ起動に失敗しました: ${error.message || error}`, 'error');
+        if (!state.scannerCancelRequested) {
+          setStatus(`カメラ起動に失敗しました: ${error.message || error}`, 'error');
+        }
       } finally {
-        state.scannerStarting = false;
+        if (startSeq === state.scannerStartSeq) {
+          state.scannerStarting = false;
+        }
         updateButtons();
       }
     }
 
     // カメラ停止
     async function stopScanner(options = {}) {
+      state.scannerCancelRequested = true;
+      state.scannerStartSeq += 1;
       clearScanTimeout();
 
       try {
@@ -590,6 +641,7 @@
       } catch (e) {
       }
 
+      state.scannerStarting = false;
       state.scannerRunning = false;
       resetDetectMemory();
       updateButtons();
@@ -647,7 +699,7 @@
 
       await stopScanner({ silent: true, keepLock: true });
       setStatus(`読み取り成功: ${raw}\n自動検索しています...`, 'ok');
-      await searchByInput();
+      await searchByInput('camera_scan');
     }
 
     // 平均誤差を計算
@@ -671,8 +723,8 @@
       state.detectStreak = 0;
     }
 
-    // 手入力検索
-    async function searchByInput() {
+    // 手入力・カメラ読取後の検索
+    async function searchByInput(inputMethod = 'manual_search') {
       const keyword = String(els.barcodeInput.value || '').trim();
       if (!keyword) {
         setStatus('バーコード / JAN / 商品コード / 品番 / 品名を入力してください。', 'error');
@@ -681,6 +733,9 @@
       if (state.searchInFlight || state.saveInFlight) return;
 
       state.searchInFlight = true;
+      state.lastInputMethod = inputMethod;
+      state.lastSearchKeyword = '';
+      state.lastSearchResultCount = null;
       updateButtons();
       clearCandidatesOnly();
 
@@ -697,6 +752,8 @@
 
         const items = Array.isArray(res.items) ? res.items : [];
         state.currentItems = items;
+        state.lastSearchKeyword = keyword;
+        state.lastSearchResultCount = items.length;
 
         if (items.length === 0) {
           state.selectedProduct = null;
@@ -830,12 +887,13 @@
 
       try {
         setStatus('一致保存しています...');
+        const inputMethod = state.lastInputMethod === 'camera_scan' ? 'camera_scan' : 'manual_search';
         const res = await apiPost({
           action: 'save',
           operatorCode: els.operatorCode.value,
           location: els.location.value,
           quantity,
-          inputMethod: 'camera_scan',
+          inputMethod,
           inputValue,
           product: state.selectedProduct
         });
@@ -845,8 +903,12 @@
         }
 
         afterSaveSuccess(inputValue);
-        await boot();
         setStatus('一致保存が完了しました。次を読むときは「カメラ開始」を押してください。', 'ok');
+        try {
+          await boot({ silentStart: true, silentSuccess: true, silentFailure: true, throwOnFailure: true });
+        } catch (bootError) {
+          setStatus(`一致保存は完了しましたが、件数更新に失敗しました: ${bootError.message}`, 'error');
+        }
       } catch (error) {
         setStatus(`一致保存に失敗しました: ${error.message}`, 'error');
       } finally {
@@ -864,6 +926,14 @@
       const inputValue = String(els.barcodeInput.value || '').trim();
       if (!inputValue) {
         setStatus('候補なし保存するにはバーコード / JAN が必要です。', 'error');
+        return;
+      }
+      if (state.currentItems.length > 0) {
+        setStatus('候補があるためTEMP保存できません。候補を選択して一致保存してください。', 'error');
+        return;
+      }
+      if (state.lastSearchKeyword !== inputValue || state.lastSearchResultCount !== 0) {
+        setStatus('TEMP保存は、現在の入力で検索して候補が0件だった場合だけ実行できます。先に検索してください。', 'error');
         return;
       }
 
@@ -886,8 +956,12 @@
         }
 
         afterSaveSuccess(inputValue);
-        await boot();
         setStatus('候補なしでTEMP保存が完了しました。次を読むときは「カメラ開始」を押してください。', 'ok');
+        try {
+          await boot({ silentStart: true, silentSuccess: true, silentFailure: true, throwOnFailure: true });
+        } catch (bootError) {
+          setStatus(`候補なしでTEMP保存は完了しましたが、件数更新に失敗しました: ${bootError.message}`, 'error');
+        }
       } catch (error) {
         setStatus(`候補なし保存に失敗しました: ${error.message}`, 'error');
       } finally {
@@ -908,7 +982,7 @@
     function afterSaveSuccess(savedInputValue) {
       clearSearchState(false);
       els.barcodeInput.value = '';
-      releaseScanLock(savedInputValue);
+      releaseScanLock('');
       els.barcodeInput.focus();
     }
 
@@ -924,6 +998,9 @@
       els.quantity.value = '1';
       state.selectedProduct = null;
       state.currentItems = [];
+      state.lastInputMethod = 'manual_search';
+      state.lastSearchKeyword = '';
+      state.lastSearchResultCount = null;
       renderCandidates();
       renderSelectedProduct();
       els.candidateInfo.textContent = 'まだ候補はありません。';
@@ -943,8 +1020,8 @@
       els.stopScanBtn.disabled = !state.scannerRunning && !state.scannerStarting;
       els.searchBtn.disabled = busy;
       els.clearBtn.disabled = state.saveInFlight;
-      els.saveMatchedBtn.disabled = state.saveInFlight;
-      els.saveUnmatchedBtn.disabled = state.saveInFlight;
+      els.saveMatchedBtn.disabled = state.searchInFlight || state.saveInFlight;
+      els.saveUnmatchedBtn.disabled = state.searchInFlight || state.saveInFlight;
     }
 
     async function apiPost(payload) {
