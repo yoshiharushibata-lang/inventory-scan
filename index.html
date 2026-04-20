@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸スキャン</title>
+  <!-- Quagga2 library -->
   <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
   <style>
     :root {
@@ -269,10 +270,12 @@
       <div class="grid grid-2">
         <div>
           <label for="operatorCode">担当者コード</label>
+          <!-- オプションはスクリプトで生成 -->
           <select id="operatorCode"></select>
         </div>
         <div>
           <label for="location">棚番号</label>
+          <!-- オプションはスクリプトで生成 -->
           <select id="location"></select>
         </div>
       </div>
@@ -298,16 +301,16 @@
       <div style="height:10px;"></div>
       <div class="row">
         <button id="startScanBtn" type="button">カメラ開始</button>
-        <button id="stopScanBtn" type="button" class="secondary">カメラ停止</button>
+        <button id="stopScanBtn" type="button" class="secondary" disabled>カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。20秒で自動停止します。</div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。10秒で自動停止します。</div>
     </div>
 
     <div class="card">
       <h2>検索入力</h2>
       <label for="barcodeInput">バーコード / JAN / 商品コード / 品番 / 品名</label>
-      <input id="barcodeInput" type="text" inputmode="text" placeholder="スキャン結果または手入力" />
+      <input id="barcodeInput" type="text" inputmode="text" placeholder="スキャン結果または手入力">
       <div style="height:10px;"></div>
       <div class="row">
         <button id="searchBtn" type="button">検索</button>
@@ -328,7 +331,7 @@
       </div>
       <div style="height:10px;"></div>
       <label for="quantity">数量</label>
-      <input id="quantity" type="number" min="1" step="1" value="1" />
+      <input id="quantity" type="number" min="1" step="1" value="1">
       <div style="height:10px;"></div>
       <div class="row">
         <button id="saveMatchedBtn" type="button">一致保存</button>
@@ -336,16 +339,22 @@
       </div>
     </div>
 
-    <div id="statusBox" class="status">起動準備中...</div>
+    <div id="statusBox" class="status">初期データを取得しています...</div>
   </div>
 
   <script>
+    // APIエンドポイント
     const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';
+    // 同じコード読み取りの無視時間(ms)
     const SAME_CODE_IGNORE_MS = 2000;
+    // 読み取り成功まで必要な連続検出回数
     const REQUIRED_STREAK = 2;
+    // デコード時の許容誤差
     const MAX_ACCEPTABLE_ERROR = 0.20;
-    const SCAN_TIMEOUT_MS = 20000;
+    // スキャンの自動停止タイムアウト(ms) - 10秒
+    const SCAN_TIMEOUT_MS = 10000;
 
+    // アプリケーション状態
     const state = {
       scannerStarting: false,
       scannerRunning: false,
@@ -361,6 +370,7 @@
       scanTimeoutId: null
     };
 
+    // DOM要素
     const els = {
       operatorCode: document.getElementById('operatorCode'),
       location: document.getElementById('location'),
@@ -381,6 +391,7 @@
       statusBox: document.getElementById('statusBox')
     };
 
+    // 初期化処理
     document.addEventListener('DOMContentLoaded', async () => {
       populateOperatorCodes();
       populateLocations();
@@ -389,6 +400,7 @@
       await boot();
     });
 
+    // イベント登録
     function bindEvents() {
       els.operatorCode.addEventListener('change', async () => { await boot(); });
       els.location.addEventListener('change', async () => { await boot(); });
@@ -426,6 +438,7 @@
         await saveUnmatched();
       });
 
+      // タブ切り替え時にカメラを止める
       document.addEventListener('visibilitychange', async () => {
         if (document.hidden) {
           await stopScanner({ silent: true, keepLock: true });
@@ -433,6 +446,7 @@
       });
     }
 
+    // 担当者コード生成
     function populateOperatorCodes() {
       const values = [];
       for (let i = 1; i <= 10; i++) values.push(String(i).padStart(3, '0'));
@@ -440,6 +454,7 @@
       els.operatorCode.value = '001';
     }
 
+    // 棚番号生成
     function populateLocations() {
       const rows = 'abcdefghijk'.split('');
       const values = [];
@@ -450,6 +465,7 @@
       els.location.value = 'a-1';
     }
 
+    // boot: 初期データ読み込み
     async function boot() {
       try {
         setStatus('初期データを取得しています...');
@@ -486,6 +502,7 @@
       }
     }
 
+    // カメラ起動
     async function startScanner() {
       if (state.scannerRunning) {
         setStatus('カメラはすでに起動中です。');
@@ -509,9 +526,8 @@
               target: els.scannerViewport,
               constraints: {
                 facingMode: { ideal: 'environment' },
-                width: { ideal: 960 },
-                height: { ideal: 540 },
-                aspectRatio: { ideal: 1.7778 }
+                width: { ideal: 640 },
+                height: { ideal: 480 }
               },
               area: {
                 top: '38%',
@@ -521,11 +537,11 @@
               }
             },
             locator: {
-              patchSize: 'large',
-              halfSample: false
+              patchSize: 'medium',
+              halfSample: true
             },
             numOfWorkers: 0,
-            frequency: 4,
+            frequency: 3,
             locate: false,
             decoder: {
               readers: ['ean_reader']
@@ -548,10 +564,10 @@
         state.scannerRunning = true;
         state.scanTimeoutId = setTimeout(async () => {
           await stopScanner({ silent: true, keepLock: true });
-          setStatus('20秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');
+          setStatus('10秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');
         }, SCAN_TIMEOUT_MS);
 
-        setStatus('カメラを起動しました。読めたら自動で停止して検索します。', 'ok');
+        setStatus('カメラを起動しました。読めたら自動で停止します。続けて読む場合は再度「カメラ開始」を押してください。', 'ok');
       } catch (error) {
         setStatus(`カメラ起動に失敗しました: ${error.message || error}`, 'error');
       } finally {
@@ -560,6 +576,7 @@
       }
     }
 
+    // カメラ停止
     async function stopScanner(options = {}) {
       clearScanTimeout();
 
@@ -595,6 +612,7 @@
       }
     }
 
+    // Quagga読み取りハンドラ
     async function onQuaggaDetected(result) {
       if (state.scanLocked || state.searchInFlight || state.saveInFlight) return;
       if (!result || !result.codeResult || !result.codeResult.code) return;
@@ -634,6 +652,7 @@
       await searchByInput();
     }
 
+    // 平均誤差を計算
     function getMeanError(result) {
       const decodedCodes = result && result.codeResult && result.codeResult.decodedCodes
         ? result.codeResult.decodedCodes
@@ -654,6 +673,7 @@
       state.detectStreak = 0;
     }
 
+    // 手入力検索
     async function searchByInput() {
       const keyword = String(els.barcodeInput.value || '').trim();
       if (!keyword) {
