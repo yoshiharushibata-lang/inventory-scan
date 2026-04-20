@@ -270,12 +270,10 @@
       <div class="grid grid-2">
         <div>
           <label for="operatorCode">担当者コード</label>
-          <!-- オプションはスクリプトで生成 -->
           <select id="operatorCode"></select>
         </div>
         <div>
           <label for="location">棚番号</label>
-          <!-- オプションはスクリプトで生成 -->
           <select id="location"></select>
         </div>
       </div>
@@ -304,7 +302,7 @@
         <button id="stopScanBtn" type="button" class="secondary" disabled>カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。10秒で自動停止します。</div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。15秒で自動停止します。</div>
     </div>
 
     <div class="card">
@@ -351,8 +349,8 @@
     const REQUIRED_STREAK = 2;
     // デコード時の許容誤差
     const MAX_ACCEPTABLE_ERROR = 0.20;
-    // スキャンの自動停止タイムアウト(ms) - 10秒
-    const SCAN_TIMEOUT_MS = 10000;
+    // スキャンの自動停止タイムアウト(ms) - 15秒
+    const SCAN_TIMEOUT_MS = 15000;
 
     // アプリケーション状態
     const state = {
@@ -526,8 +524,8 @@
               target: els.scannerViewport,
               constraints: {
                 facingMode: { ideal: 'environment' },
-                width: { ideal: 640 },
-                height: { ideal: 480 }
+                width: { ideal: 800 },
+                height: { ideal: 600 }
               },
               area: {
                 top: '38%',
@@ -537,8 +535,8 @@
               }
             },
             locator: {
-              patchSize: 'medium',
-              halfSample: true
+              patchSize: 'large',
+              halfSample: false
             },
             numOfWorkers: 0,
             frequency: 3,
@@ -564,7 +562,7 @@
         state.scannerRunning = true;
         state.scanTimeoutId = setTimeout(async () => {
           await stopScanner({ silent: true, keepLock: true });
-          setStatus('10秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');
+          setStatus('15秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');
         }, SCAN_TIMEOUT_MS);
 
         setStatus('カメラを起動しました。読めたら自動で停止します。続けて読む場合は再度「カメラ開始」を押してください。', 'ok');
