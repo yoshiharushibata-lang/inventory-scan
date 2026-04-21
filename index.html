@@ -304,7 +304,7 @@
         <button id="stopScanBtn" type="button" class="secondary" disabled>カメラ停止</button>
       </div>
       <div style="height:10px;"></div>
-      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。曲面や反射がある場合は、真正面から少し角度を変えて光の映り込みを避けてください。15秒で自動停止します。</div>
+      <div class="small">バーコード全体が緑枠に入るように、少し離してかざしてください。曲面や反射がある場合は、バーコード中央を緑枠中央に合わせ、容器を少し回して最も平らに見える角度で光の映り込みを避けてください。15秒で自動停止します。</div>
     </div>
 
     <div class="card">
@@ -350,7 +350,7 @@
     // 読み取り成功まで必要な連続検出回数
     const REQUIRED_STREAK = 2;
     // デコード時の許容誤差
-    const MAX_ACCEPTABLE_ERROR = 0.25;
+    const MAX_ACCEPTABLE_ERROR = 0.30;
     // スキャンの自動停止タイムアウト(ms) - 15秒
     const SCAN_TIMEOUT_MS = 15000;
 
@@ -563,23 +563,23 @@
               target: els.scannerViewport,
               constraints: {
                 facingMode: { ideal: 'environment' },
-                width: { ideal: 800 },
-                height: { ideal: 600 }
+                width: { ideal: 960 },
+                height: { ideal: 540 }
               },
               area: {
-                top: '32%',
-                right: '8%',
-                left: '8%',
-                bottom: '32%'
+                top: '34%',
+                right: '10%',
+                left: '10%',
+                bottom: '34%'
               }
             },
             locator: {
-              patchSize: 'large',
+              patchSize: 'medium',
               halfSample: false
             },
             numOfWorkers: 0,
             frequency: 3,
-            locate: false,
+            locate: true,
             decoder: {
               readers: ['ean_reader']
             }
