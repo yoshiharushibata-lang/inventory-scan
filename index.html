@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>棚卸スキャン</title>
-  <!-- Quagga2 library -->
   <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
   <style>
     :root {
@@ -270,12 +269,10 @@
       <div class="grid grid-2">
         <div>
           <label for="operatorCode">担当者コード</label>
-          <!-- オプションはスクリプトで生成 -->
           <select id="operatorCode"></select>
         </div>
         <div>
           <label for="location">棚番号</label>
-          <!-- オプションはスクリプトで生成 -->
           <select id="location"></select>
         </div>
       </div>
@@ -343,18 +340,12 @@
   </div>
 
   <script>
-    // APIエンドポイント
     const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';
-    // 同じコード読み取りの無視時間(ms)
     const SAME_CODE_IGNORE_MS = 2000;
-    // 読み取り成功まで必要な連続検出回数
     const REQUIRED_STREAK = 2;
-    // デコード時の許容誤差
     const MAX_ACCEPTABLE_ERROR = 0.30;
-    // スキャンの自動停止タイムアウト(ms) - 15秒
     const SCAN_TIMEOUT_MS = 15000;
 
-    // アプリケーション状態
     const state = {
       scannerStarting: false,
       scannerRunning: false,
@@ -376,7 +367,6 @@
       bootRequestId: 0
     };
 
-    // DOM要素
     const els = {
       operatorCode: document.getElementById('operatorCode'),
       location: document.getElementById('location'),
@@ -397,7 +387,6 @@
       statusBox: document.getElementById('statusBox')
     };
 
-    // 初期化処理
     document.addEventListener('DOMContentLoaded', async () => {
       populateOperatorCodes();
       populateLocations();
@@ -406,7 +395,6 @@
       await boot();
     });
 
-    // イベント登録
     function bindEvents() {
       els.operatorCode.addEventListener('change', async () => { await boot(); });
       els.location.addEventListener('change', async () => { await boot(); });
@@ -451,7 +439,6 @@
         await saveUnmatched();
       });
 
-      // タブ切り替え時にカメラを止める
       document.addEventListener('visibilitychange', async () => {
         if (document.hidden) {
           await stopScanner({ silent: true, keepLock: true });
@@ -459,7 +446,6 @@
       });
     }
 
-    // 担当者コード生成
     function populateOperatorCodes() {
       const values = [];
       for (let i = 1; i <= 10; i++) values.push(String(i).padStart(3, '0'));
@@ -467,7 +453,6 @@
       els.operatorCode.value = '001';
     }
 
-    // 棚番号生成
     function populateLocations() {
       const rows = 'abcdefghijk'.split('');
       const values = [];
@@ -478,7 +463,6 @@
       els.location.value = 'a-1';
     }
 
-    // boot: 初期データ読み込み
     async function boot(options = {}) {
       const requestId = ++state.bootRequestId;
       const operatorCode = els.operatorCode.value;
@@ -537,7 +521,6 @@
       }
     }
 
-    // カメラ起動
     async function startScanner() {
       if (state.scannerRunning) {
         setStatus('カメラはすでに起動中です。');
@@ -623,7 +606,6 @@
       }
     }
 
-    // カメラ停止
     async function stopScanner(options = {}) {
       state.scannerCancelRequested = true;
       state.scannerStartSeq += 1;
@@ -662,7 +644,6 @@
       }
     }
 
-    // Quagga読み取りハンドラ
     async function onQuaggaDetected(result) {
       if (state.scanLocked || state.searchInFlight || state.saveInFlight) return;
       if (!result || !result.codeResult || !result.codeResult.code) return;
@@ -702,7 +683,6 @@
       await searchByInput('camera_scan');
     }
 
-    // 平均誤差を計算
     function getMeanError(result) {
       const decodedCodes = result && result.codeResult && result.codeResult.decodedCodes
         ? result.codeResult.decodedCodes
@@ -723,7 +703,6 @@
       state.detectStreak = 0;
     }
 
-    // 手入力・カメラ読取後の検索
     async function searchByInput(inputMethod = 'manual_search') {
       const keyword = String(els.barcodeInput.value || '').trim();
       if (!keyword) {
@@ -887,13 +866,12 @@
 
       try {
         setStatus('一致保存しています...');
-        const inputMethod = state.lastInputMethod === 'camera_scan' ? 'camera_scan' : 'manual_search';
         const res = await apiPost({
           action: 'save',
           operatorCode: els.operatorCode.value,
           location: els.location.value,
           quantity,
-          inputMethod,
+          inputMethod: 'selectedProduct',
           inputValue,
           product: state.selectedProduct
         });
