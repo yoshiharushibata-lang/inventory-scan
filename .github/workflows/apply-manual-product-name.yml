@@ -1,0 +1,225 @@
+name: Apply TEMP manual product name UI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-manual-product-name.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Patch index.html safely
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, got {count}')
+              s = s.replace(old, new, 1)
+
+          replace_once(
+          '''      <div id="selectedProductArea">
+                <div class="small">選択中の商品はありません。</div>
+              </div>
+              <div style="height:10px;"></div>
+              <label for="quantity">数量</label>''',
+          '''      <div id="selectedProductArea">
+                <div class="small">選択中の商品はありません。</div>
+              </div>
+              <div id="manualProductNameWrap" style="display:none;">
+                <div style="height:10px;"></div>
+                <label for="manualProductName">商品名</label>
+                <input id="manualProductName" type="text" inputmode="text" autocomplete="off" placeholder="商品名を入力">
+              </div>
+              <div style="height:10px;"></div>
+              <label for="quantity">数量</label>''',
+          'add manual product name field')
+
+          replace_once(
+          '''      candidateList: document.getElementById('candidateList'),
+              selectedProductArea: document.getElementById('selectedProductArea'),
+              quantity: document.getElementById('quantity'),''',
+          '''      candidateList: document.getElementById('candidateList'),
+              selectedProductArea: document.getElementById('selectedProductArea'),
+              manualProductNameWrap: document.getElementById('manualProductNameWrap'),
+              manualProductName: document.getElementById('manualProductName'),
+              quantity: document.getElementById('quantity'),''',
+          'add element refs')
+
+          replace_once(
+          '''      els.barcodeInput.addEventListener('input', () => {
+                state.lastInputMethod = 'manual_search';
+                if (String(els.barcodeInput.value || '').trim() !== state.lastSearchKeyword) {
+                  state.lastSearchResultCount = null;
+                }
+              });''',
+          '''      els.barcodeInput.addEventListener('input', () => {
+                state.lastInputMethod = 'manual_search';
+                if (String(els.barcodeInput.value || '').trim() !== state.lastSearchKeyword) {
+                  state.lastSearchResultCount = null;
+                  setManualProductNameVisible(false, true);
+                }
+              });''',
+          'clear stale manual name')
+
+          replace_once(
+          '''        if (items.length === 0) {
+                  state.selectedProduct = null;
+                  renderSelectedProduct();
+                  els.candidateInfo.textContent = '候補がありません。TEMP保存が可能です。';
+                  setStatus('候補なしです。必要なら候補なしでTEMP保存してください。');
+                  return;
+                }
+
+                if (items.length === 1) {
+                  state.selectedProduct = items[0];''',
+          '''        if (items.length === 0) {
+                  state.selectedProduct = null;
+                  renderSelectedProduct();
+                  setManualProductNameVisible(true, false);
+                  els.candidateInfo.textContent = '候補がありません。TEMP保存が可能です。';
+                  setStatus('候補なしです。商品名を入力してTEMP保存してください。');
+                  return;
+                }
+
+                if (items.length === 1) {
+                  setManualProductNameVisible(false, true);
+                  state.selectedProduct = items[0];''',
+          'zero and one candidate behavior')
+
+          replace_once(
+          '''        state.selectedProduct = null;
+                renderCandidates();
+                renderSelectedProduct();
+                els.candidateInfo.textContent = `候補が ${items.length} 件あります。1件タップしてください。`;''',
+          '''        setManualProductNameVisible(false, true);
+                state.selectedProduct = null;
+                renderCandidates();
+                renderSelectedProduct();
+                els.candidateInfo.textContent = `候補が ${items.length} 件あります。1件タップしてください。`;''',
+          'multiple candidate behavior')
+
+          replace_once(
+          '''        btn.addEventListener('click', () => {
+                  state.selectedProduct = item;''',
+          '''        btn.addEventListener('click', () => {
+                  setManualProductNameVisible(false, true);
+                  state.selectedProduct = item;''',
+          'candidate click behavior')
+
+          replace_once(
+          '''      if (state.lastSearchKeyword !== inputValue || state.lastSearchResultCount !== 0) {
+                setStatus('TEMP保存は、現在の入力で検索して候補が0件だった場合だけ実行できます。先に検索してください。', 'error');
+                return;
+              }
+
+              state.saveInFlight = true;''',
+          '''      if (state.lastSearchKeyword !== inputValue || state.lastSearchResultCount !== 0) {
+                setStatus('TEMP保存は、現在の入力で検索して候補が0件だった場合だけ実行できます。先に検索してください。', 'error');
+                return;
+              }
+
+              const productName = String(els.manualProductName.value || '').trim();
+              if (!productName) {
+                setStatus('商品名を入力してください。', 'error');
+                els.manualProductName.focus();
+                return;
+              }
+
+              state.saveInFlight = true;''',
+          'require manual product name')
+
+          replace_once(
+          '''          quantity,
+                  inputMethod: 'unmatched',
+                  inputValue
+                });''',
+          '''          quantity,
+                  inputMethod: 'unmatched',
+                  inputValue,
+                  productName
+                });''',
+          'send productName')
+
+          replace_once(
+          '''    function clearSearchState(clearInput) {
+              if (clearInput) els.barcodeInput.value = '';
+              els.quantity.value = '1';
+              state.selectedProduct = null;''',
+          '''    function clearSearchState(clearInput) {
+              if (clearInput) els.barcodeInput.value = '';
+              els.quantity.value = '1';
+              setManualProductNameVisible(false, true);
+              state.selectedProduct = null;''',
+          'clear manual name after reset')
+
+          replace_once(
+          '''    function clearCandidatesOnly() {
+              state.selectedProduct = null;''',
+          '''    function clearCandidatesOnly() {
+              setManualProductNameVisible(false, true);
+              state.selectedProduct = null;''',
+          'hide manual field during search')
+
+          replace_once(
+          '''    function updateButtons() {
+              const busy = state.scannerStarting || state.searchInFlight || state.saveInFlight;''',
+          '''    function setManualProductNameVisible(visible, clearValue) {
+              if (clearValue) {
+                els.manualProductName.value = '';
+              }
+              els.manualProductNameWrap.style.display = visible ? 'block' : 'none';
+            }
+
+            function updateButtons() {
+              const busy = state.scannerStarting || state.searchInFlight || state.saveInFlight;''',
+          'add visibility helper')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s = Path('index.html').read_text(encoding='utf-8')
+          m = re.search(r'<script>\n(.*)\n  </script>', s, re.S)
+          if not m:
+              raise SystemExit('script block not found')
+          Path('/tmp/index.js').write_text(m.group(1), encoding='utf-8')
+          PY
+          node --check /tmp/index.js
+          git diff --check
+          grep -q 'id="manualProductName"' index.html
+          grep -q 'productName' index.html
+
+      - name: Commit Phase 2 frontend
+        shell: bash
+        run: |
+          if git diff --quiet -- index.html; then
+            echo 'No change needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git commit -m 'Add manual product name for TEMP inventory saves'
+          git push origin HEAD:main
