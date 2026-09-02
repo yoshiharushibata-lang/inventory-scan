@@ -1,0 +1,91 @@
+name: Create camera test v1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/create-camera-test-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  create-test-page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Create comparison page from production
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          src = Path('index.html').read_text(encoding='utf-8')
+          s = src
+
+          def rep(old, new, label):
+              global s
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 match, got {n}')
+              s = s.replace(old, new, 1)
+
+          rep('height: 72px;', 'height: 115px;', 'guide height')
+
+          rep(
+              "constraints:{facingMode:{ideal:'environment'},width:{ideal:960},height:{ideal:540}},area:{top:'34%',right:'10%',left:'10%',bottom:'34%'}},locator:{patchSize:'medium',halfSample:false},numOfWorkers:0,frequency:3,locate:true,decoder:{readers:['ean_reader']}",
+              "constraints:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},area:{top:'25%',right:'8%',left:'8%',bottom:'25%'}},locator:{patchSize:'medium',halfSample:false},numOfWorkers:0,frequency:8,locate:true,decoder:{readers:['ean_reader']}",
+              'camera settings')
+
+          rep(
+              "Quagga.start();state.scannerRunning=true;",
+              "Quagga.start();state.scannerRunning=true;try{const video=els.scannerViewport.querySelector('video');const stream=video&&video.srcObject;const tracks=stream&&typeof stream.getVideoTracks==='function'?stream.getVideoTracks():[];const track=tracks&&tracks[0];if(track&&typeof track.getCapabilities==='function'&&typeof track.applyConstraints==='function'){const caps=track.getCapabilities()||{};const modes=Array.isArray(caps.focusMode)?caps.focusMode:[];if(modes.includes('continuous')){track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});}}}catch(e){}",
+              'continuous autofocus')
+
+          rep(
+              '<div class="row"><button id="saveMatchedBtn" type="button">一致保存</button><button id="saveUnmatchedBtn" type="button" class="danger">候補なしでTEMP保存</button></div>',
+              '<div class="small">比較テスト用ページのため保存機能は無効です。</div><div class="row" style="display:none"><button id="saveMatchedBtn" type="button">一致保存</button><button id="saveUnmatchedBtn" type="button" class="danger">候補なしでTEMP保存</button></div>',
+              'disable save UI')
+
+          if 'REQUIRED_STREAK = 2;' not in s or 'MAX_ACCEPTABLE_ERROR = 0.30;' not in s:
+              raise SystemExit('safety constants unexpectedly changed')
+          if "readers:['ean_reader']" not in s or 'numOfWorkers:0,frequency:8' not in s or 'halfSample:false' not in s:
+              raise SystemExit('camera validation failed')
+          if "const API_URL = 'https://yellow-dream-2d6b.yoshiharu-shibata.workers.dev/';" not in s:
+              raise SystemExit('API_URL changed unexpectedly')
+
+          Path('camera_test_v1.html').write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validate test page
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s = Path('camera_test_v1.html').read_text(encoding='utf-8')
+          m = re.search(r'<script>\n(.*)\n  </script>', s, re.S)
+          if not m:
+              raise SystemExit('script block not found')
+          Path('/tmp/camera_test_v1.js').write_text(m.group(1), encoding='utf-8')
+          PY
+          node --check /tmp/camera_test_v1.js
+          git diff --check
+          grep -q "width:{ideal:1280},height:{ideal:720}" camera_test_v1.html
+          grep -q "area:{top:'25%',right:'8%',left:'8%',bottom:'25%'}" camera_test_v1.html
+          grep -q "frequency:8" camera_test_v1.html
+          grep -q "focusMode:'continuous'" camera_test_v1.html
+          grep -q "height: 115px" camera_test_v1.html
+          grep -q "比較テスト用ページのため保存機能は無効です" camera_test_v1.html
+
+      - name: Commit comparison page
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add camera_test_v1.html
+          git commit -m 'Add camera scan comparison page v1'
+          git push origin HEAD:main
