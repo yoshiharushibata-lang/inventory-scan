@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>棚卸スキャン - カメラ比較HUD</title>
+</head>
+<body>
+  <div id="loading" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;">比較ページを読み込んでいます...</div>
+  <script>
+    (async () => {
+      const res = await fetch('./camera_test_v1.html', { cache: 'no-store' });
+      if (!res.ok) throw new Error('camera_test_v1.html load failed: HTTP ' + res.status);
+      let html = await res.text();
+
+      const hud = `
+  <div id="scanHud" style="position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:rgba(17,24,39,.92);color:#fff;border-radius:12px;padding:10px 12px;font:12px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-shadow:0 2px 12px rgba(0,0,0,.25);pointer-events:none;">
+    <div style="font-weight:700;margin-bottom:4px;">読取計測HUD</div>
+    <div id="hudLatest">起動→読取: -</div>
+    <div><span id="hudCount">読取件数: 0</span> / <span id="hudDup">二重読取疑い: 0</span></div>
+    <div id="hudLog" style="margin-top:4px;max-height:76px;overflow:hidden;white-space:pre-wrap;color:#d1d5db;"></div>
+  </div>
+  <script>
+    (()=>{
+      const hud={latest:document.getElementById('hudLatest'),count:document.getElementById('hudCount'),dup:document.getElementById('hudDup'),log:document.getElementById('hudLog')};
+      let cameraStartedAt=0,readCount=0,dupCount=0,lastCode='',lastReadAt=0;
+      const status=document.getElementById('statusBox');
+      if(!status||!window.MutationObserver)return;
+      const stamp=()=>new Date().toLocaleTimeString('ja-JP',{hour12:false});
+      const append=(line)=>{hud.log.textContent=(line+'\\n'+hud.log.textContent).slice(0,1200);};
+      const observeText=()=>{
+        const text=String(status.textContent||'');
+        if(text.includes('カメラを起動しました')){
+          cameraStartedAt=performance.now();
+          append(stamp()+' カメラ起動');
+          return;
+        }
+        const m=text.match(/読み取り成功:\\s*([^\\n]+)/);
+        if(!m)return;
+        const now=performance.now();
+        const code=String(m[1]||'').trim();
+        const sec=cameraStartedAt?((now-cameraStartedAt)/1000):null;
+        readCount+=1;
+        if(code&&code===lastCode&&lastReadAt&&now-lastReadAt<=3000)dupCount+=1;
+        lastCode=code;lastReadAt=now;
+        hud.latest.textContent='起動→読取: '+(sec===null?'-':sec.toFixed(2)+'秒');
+        hud.count.textContent='読取件数: '+readCount;
+        hud.dup.textContent='二重読取疑い: '+dupCount;
+        append(stamp()+' '+(code||'(code不明)')+' '+(sec===null?'-':sec.toFixed(2)+'秒'));
+      };
+      new MutationObserver(observeText).observe(status,{childList:true,characterData:true,subtree:true});
+      observeText();
+    })();
+  <\/script>`;
+
+      if (!html.includes('</body>')) throw new Error('body end tag not found');
+      html = html.replace('</body>', hud + '\n</body>');
+      document.open();
+      document.write(html);
+      document.close();
+    })().catch((error) => {
+      document.body.innerHTML = '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:20px;color:#b3261e;">HUD比較ページの読込に失敗しました: ' + String(error && error.message || error) + '</div>';
+    });
+  </script>
+</body>
+</html>
