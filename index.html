@@ -108,7 +108,7 @@
       left: 50%;
       transform: translate(-50%, -50%);
       width: 82%;
-      height: 72px;
+      height: 115px;
       border: 2px solid #22c55e;
       border-radius: 8px;
       box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
@@ -278,9 +278,9 @@
       const startSeq=++state.scannerStartSeq;state.scannerCancelRequested=false;state.scannerStarting=true;updateButtons();
       try{
         setStatus('カメラを起動しています...');
-        await new Promise((resolve,reject)=>{Quagga.init({inputStream:{type:'LiveStream',target:els.scannerViewport,constraints:{facingMode:{ideal:'environment'},width:{ideal:960},height:{ideal:540}},area:{top:'34%',right:'10%',left:'10%',bottom:'34%'}},locator:{patchSize:'medium',halfSample:false},numOfWorkers:0,frequency:3,locate:true,decoder:{readers:['ean_reader']}},err=>{if(err){reject(err);return;}resolve();});});
+        await new Promise((resolve,reject)=>{Quagga.init({inputStream:{type:'LiveStream',target:els.scannerViewport,constraints:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},area:{top:'25%',right:'8%',left:'8%',bottom:'25%'}},locator:{patchSize:'medium',halfSample:false},numOfWorkers:0,frequency:8,locate:true,decoder:{readers:['ean_reader']}},err=>{if(err){reject(err);return;}resolve();});});
         if(state.scannerCancelRequested||startSeq!==state.scannerStartSeq){try{Quagga.stop();}catch(e){}state.scannerRunning=false;return;}
-        resetDetectMemory();clearScanTimeout();Quagga.offDetected(onQuaggaDetected);Quagga.onDetected(onQuaggaDetected);Quagga.start();state.scannerRunning=true;
+        resetDetectMemory();clearScanTimeout();Quagga.offDetected(onQuaggaDetected);Quagga.onDetected(onQuaggaDetected);Quagga.start();state.scannerRunning=true;try{const video=els.scannerViewport.querySelector('video');const stream=video&&video.srcObject;const tracks=stream&&typeof stream.getVideoTracks==='function'?stream.getVideoTracks():[];const track=tracks&&tracks[0];if(track&&typeof track.getCapabilities==='function'&&typeof track.applyConstraints==='function'){const caps=track.getCapabilities()||{};const modes=Array.isArray(caps.focusMode)?caps.focusMode:[];if(modes.includes('continuous')){track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});}}}catch(e){}
         state.scanTimeoutId=setTimeout(async()=>{await stopScanner({silent:true,keepLock:true});setStatus('15秒経過したためカメラを停止しました。続けるときは「カメラ開始」を押してください。');},SCAN_TIMEOUT_MS);
         setStatus('カメラを起動しました。読めたら自動で停止します。続けて読む場合は再度「カメラ開始」を押してください。','ok');
       }catch(error){if(!state.scannerCancelRequested)setStatus(`カメラ起動に失敗しました: ${error.message||error}`,'error');}
